@@ -112,11 +112,11 @@ final class AskService
             $engineDays[] = $described;
         }
 
-        $template = $this->template($intent, $engineDays, $lang, $disclaimer);
+        $template = $this->template($intent, $engineDays, $lang, $disclaimer, $today);
         $answer = $template;
         $mode = 'template';
         if ($this->ai->providerName() !== 'mock') {
-            $prose = $this->explainWithModel((string) ($input['question'] ?? ''), $intent, $engineDays);
+            $prose = $this->explainWithModel((string) ($input['question'] ?? ''), $intent, $engineDays, $today);
             if ($prose !== null) {
                 $answer = $prose;
                 $mode = 'llm';
@@ -214,10 +214,11 @@ final class AskService
      * @param  array<string, mixed>  $intent
      * @param  list<array<string, mixed>>  $days
      */
-    private function explainWithModel(string $question, array $intent, array $days): ?string
+    private function explainWithModel(string $question, array $intent, array $days, DateTimeImmutable $today): ?string
     {
         $context = [
             'question' => $question,
+            'today' => $today->format('Y-m-d'),
             'activity' => $intent['activity'] ?? null,
             'days' => array_map(fn (array $day) => [
                 'date' => $day['date'],
@@ -293,6 +294,11 @@ final class AskService
                 'wedding' => 'nikah',
                 'marry' => 'nikah',
                 'marriage' => 'nikah',
+                'metatah' => 'potong_gigi',
+                'mapandes' => 'potong_gigi',
+                'mesangih' => 'potong_gigi',
+                'ngaben' => 'ngaben',
+                'bertani' => 'menanam',
             ][$activity] ?? $activity;
             if ($activity === '') {
                 $activity = null;
@@ -501,16 +507,23 @@ final class AskService
             return null;
         }
         $ruleRows = CalendarRule::query()->where('status', 'validated')->get()->map->toEngineArray()->all();
-        for ($i = 1; $i <= 366; $i++) {
-            $day = $today->modify('+'.$i.' day');
-            $described = $this->engine->describe($day, SasihDay::payloadFor($day->format('Y-m-d')));
-            $matched = $this->rules->match($described, $ruleRows, $intent['activity']);
-            if ($this->recommended($matched, $intent)) {
-                return $day->format('Y-m-d');
+        $seek = function (int $direction) use ($intent, $today, $ruleRows): ?string {
+            for ($i = 1; $i <= 366; $i++) {
+                $day = $today->modify(($direction > 0 ? '+' : '-').$i.' day');
+                $described = $this->engine->describe($day, SasihDay::payloadFor($day->format('Y-m-d')));
+                if ($described['phase'] === null) {
+                    continue;
+                }
+                $matched = $this->rules->match($described, $ruleRows, $intent['activity']);
+                if ($this->recommended($matched, $intent)) {
+                    return $day->format('Y-m-d');
+                }
             }
-        }
 
-        return null;
+            return null;
+        };
+
+        return $seek(1) ?? $seek(-1);
     }
 
     private function findNext(?string $code, DateTimeImmutable $today, bool $forward): ?string
@@ -580,7 +593,7 @@ final class AskService
      * @param  array<string, mixed>  $intent
      * @param  list<array<string, mixed>>  $days
      */
-    private function template(array $intent, array $days, string $lang, string $disclaimer): string
+    private function template(array $intent, array $days, string $lang, string $disclaimer, DateTimeImmutable $today): string
     {
         $lines = [];
         $lines[] = $lang === 'en'
@@ -594,9 +607,14 @@ final class AskService
         $recommendedDays = array_values(array_filter($days, fn (array $day) => ! empty($day['recommended'])));
         if ($intent['intent'] === 'hari_baik' && $recommendedDays !== []) {
             $first = $recommendedDays[0];
-            $lines[] = $lang === 'en'
-                ? 'Nearest day in the validated subset: '.$first['date'].' ('.$first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'].'). This is not a decision.'
-                : 'Hari terdekat pada subset aturan yang tervalidasi: '.$first['date'].' ('.$first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'].'). Ini bukan keputusan.';
+            $passed = $first['date'] < $today->format('Y-m-d');
+            $lines[] = $passed
+                ? ($lang === 'en'
+                    ? 'Inside the curated sasih table, the matching day is '.$first['date'].' ('.$first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'].'). That date has passed, and no later match is in the table.'
+                    : 'Di tabel sasih yang ada, hari yang cocok adalah '.$first['date'].' ('.$first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'].'). Tanggal itu sudah lewat, dan tidak ada kecocokan lagi sampai akhir tabel.')
+                : ($lang === 'en'
+                    ? 'Nearest day in the validated subset: '.$first['date'].' ('.$first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'].'). This is not a decision.'
+                    : 'Hari terdekat pada subset aturan yang tervalidasi: '.$first['date'].' ('.$first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'].'). Ini bukan keputusan.');
         }
         $anyRecommended = false;
         foreach ($days as $day) {

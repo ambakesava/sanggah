@@ -80,22 +80,26 @@ final class OfflineIntentParser
             'galungan', 'kuningan', 'nyepi', 'pagerwesi', 'saraswati', 'sasih', 'dewasa',
             'usaha', 'business', 'pindah', 'tanggal', 'june', 'juni', 'juli', 'pura', 'temple',
             'pawukon', 'saptawara', 'nikah', 'menikah', 'kawin', 'wedding', 'marry',
+            'gigi', 'metatah', 'mapandes', 'rambut', 'ngaben', 'menanam', 'nanam', 'bangun', 'rumah',
         ]);
     }
 
     private function activity(string $lower): ?string
     {
-        if ($this->containsAny($lower, ['buka usaha', 'membuka usaha', 'open a business', 'open a shop', 'start a business'])) {
-            return 'buka_usaha';
-        }
-        if ($this->containsAny($lower, ['pindah rumah', 'move house', 'pindah'])) {
-            return 'pindah_rumah';
-        }
-        if ($this->containsAny($lower, ['menanam', 'tanam', 'plant'])) {
-            return 'menanam';
-        }
-        if ($this->containsAny($lower, ['menikah', 'pernikahan', 'perkawinan', 'pawiwahan', 'nikah', 'kawin', 'wedding', 'marry', 'marriage'])) {
-            return 'nikah';
+        $map = [
+            'potong_gigi' => ['potong gigi', 'metatah', 'mapandes', 'mesangih', 'tooth filing', 'file teeth'],
+            'potong_rambut' => ['potong rambut', 'ngetep rambut', 'gunting rambut', 'haircut', 'cut hair'],
+            'ngaben' => ['ngaben', 'pitra yadnya', 'atiwa-tiwa', 'atiwa tiwa', 'kremasi', 'cremation'],
+            'nikah' => ['menikah', 'pernikahan', 'perkawinan', 'pawiwahan', 'nikah', 'kawin', 'wedding', 'marry', 'marriage'],
+            'pindah_rumah' => ['pindah rumah', 'move house', 'pindah'],
+            'membangun' => ['bangun rumah', 'membangun', 'build a house', 'membangun rumah'],
+            'buka_usaha' => ['buka usaha', 'membuka usaha', 'open a business', 'open a shop', 'start a business', 'berdagang'],
+            'menanam' => ['bercocok tanam', 'cocok tanam', 'menanam', 'nanam', 'bertani', 'plant'],
+        ];
+        foreach ($map as $activity => $needles) {
+            if ($this->containsAny($lower, $needles)) {
+                return $activity;
+            }
         }
 
         return null;

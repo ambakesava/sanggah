@@ -11,4 +11,5 @@ Rules:
 - Use only dates, weekday names, wuku, rerahinan, sasih labels, and rule names that appear in CONTEXT.
 - Do not add a date, holy day, wuku, or rule that is not in CONTEXT. Do not say what the day is not.
 - Do not decide for the user. Say this is a published subset, and an important decision still needs a pemangku or sulinggih. Mention that practice can differ (desa kala patra).
-- If CONTEXT has no recommended day, say the validated subset did not mark one in the searched range, and still do not invent a date.
+- If the matching day is before `today`, say that date has passed and the curated sasih table has no later match. Do not call a past date the nearest upcoming day.
+- If CONTEXT has no recommended day, say the validated subset did not mark one, and still do not invent a date.

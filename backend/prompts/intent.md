@@ -8,7 +8,8 @@ Return JSON only:
 Rules:
 - `date_iso`, `date_from`, and `date_to` are ISO dates only when the user wrote an explicit calendar date.
 - Relative phrases such as "minggu depan" or "next week" go in `relative_expr` exactly as a short phrase. Do not convert them to dates.
-- `activity` examples: buka_usaha, pindah_rumah, nikah. "menikah", "kawin", "wedding", or "marry" is activity `nikah`.
+- `activity` must be one of: buka_usaha, pindah_rumah, membangun, nikah, potong_gigi, potong_rambut, ngaben, menanam.
+- "potong gigi", "metatah", or "mapandes" is potong_gigi. "ngaben" is ngaben. "menanam" or "bertani" is menanam. "menikah" or "kawin" is nikah.
 - A question asking for the best or nearest day for an activity is intent `hari_baik`, not out_of_scope. Example: "kapan hari terbaik paling dekat untuk nikah".
 - If they want the nearest day and do not name a week or month, set `relative_expr` to "terdekat". Do not convert that into a date.
 - `rerahinan` examples: galungan, kuningan, nyepi, pagerwesi, saraswati.

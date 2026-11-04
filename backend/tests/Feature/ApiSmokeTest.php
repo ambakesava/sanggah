@@ -118,6 +118,21 @@ class ApiSmokeTest extends TestCase
         $this->assertStringContainsString('kalenderbali.org/rerainan.php', $live->json('engine.days.0.kalenderbali.0.url'));
     }
 
+    public function test_potong_gigi_returns_a_validated_day(): void
+    {
+        $this->travelTo('2026-11-05 02:00:00');
+        $response = $this->postJson('/api/ask', [
+            'question' => 'kapan hari baik untuk potong gigi',
+            'lang' => 'id',
+        ])->assertOk();
+
+        $response->assertJsonPath('intent.intent', 'hari_baik');
+        $response->assertJsonPath('intent.activity', 'potong_gigi');
+        $response->assertJsonPath('engine.days.0.recommended', true);
+        $response->assertJsonPath('engine.days.0.date', '2026-07-24');
+        $this->assertNotEmpty($response->json('engine.days.0.rules'));
+    }
+
     public function test_scan_filename_hint_explain_and_rejection(): void
     {
         $png = $this->png();

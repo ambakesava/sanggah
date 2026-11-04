@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use App\Models\CalendarRule;
 use App\Models\Source;
+use App\Services\Calendar\DewasaClause;
 use Illuminate\Database\Seeder;
 
 class CalendarRuleSeeder extends Seeder
@@ -134,6 +135,24 @@ class CalendarRuleSeeder extends Seeder
             $rule['weight'] = 1;
             $rule['rules_version'] = $version;
             CalendarRule::query()->updateOrCreate(['code' => $rule['code']], $rule);
+        }
+
+        /** @var list<array{code: string, name: string, activities: list<string>, clauses: list<string>}> $extra */
+        $extra = require database_path('seeders/data/dewasa.php');
+        foreach ($extra as $row) {
+            CalendarRule::query()->updateOrCreate(['code' => $row['code']], [
+                'name_id' => $row['name'],
+                'name_en' => $row['name'],
+                'rule_type' => 'dewasa_ayu',
+                'activity_tags' => $row['activities'],
+                'conditions' => DewasaClause::any($row['clauses']),
+                'effect' => 'good',
+                'weight' => 1,
+                'source_id' => $sources['kalenderbali-alaayu'] ?? null,
+                'status' => 'validated',
+                'validated_by' => 'tim',
+                'rules_version' => $version,
+            ]);
         }
     }
 }
