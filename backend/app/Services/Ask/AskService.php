@@ -10,6 +10,7 @@ use App\Models\CalendarRule;
 use App\Models\Ceremony;
 use App\Models\SasihDay;
 use App\Services\Ai\AiService;
+use App\Services\Ai\OfflineIntentParser;
 use App\Services\Ai\PromptLibrary;
 use App\Services\Calendar\AnswerGuard;
 use App\Services\Calendar\CalendarEngine;
@@ -114,7 +115,11 @@ final class AskService
                 ], JSON_UNESCAPED_UNICODE);
                 $response = $this->ai->generate($system, (string) $user, ['title' => 'CalendarExplanation']);
                 $text = trim($response->text);
-                if ($this->guard->accepts($text, $engineDays)) {
+                if (is_array($response->json)) {
+                    $candidate = $response->json['answer'] ?? $response->json['text'] ?? null;
+                    $text = is_string($candidate) ? trim($candidate) : '';
+                }
+                if ($text !== '' && $this->guard->accepts($text, $engineDays)) {
                     $answer = $text;
                     $mode = 'llm';
                 }
@@ -146,35 +151,62 @@ final class AskService
      */
     private function intent(array $input, string $lang, DateTimeImmutable $today): array
     {
+        $question = (string) ($input['question'] ?? '');
+        $keyword = $this->normalizeIntent((new OfflineIntentParser)->parse($question, $lang), $lang);
         $override = $input['intent_override'] ?? null;
         if (is_array($override)) {
-            return $this->normalizeIntent($override, $lang);
+            return $this->mergeIntent($this->normalizeIntent($override, $lang), $keyword);
         }
         if ($this->ai->providerName() === 'mock') {
-            $question = (string) ($input['question'] ?? '');
             $response = $this->ai->generate(
                 'CalendarIntent. Do not calculate dates.',
                 "lang: {$lang}\nquestion: {$question}\ntoday: {$today->format('Y-m-d')}",
                 ['title' => 'CalendarIntent']
             );
 
-            return $this->normalizeIntent($response->json ?? [], $lang);
+            return $this->mergeIntent($this->normalizeIntent($response->json ?? [], $lang), $keyword);
         }
         try {
-            $question = (string) ($input['question'] ?? '');
             $response = $this->ai->generate(
                 $this->prompts->get('intent'),
                 "lang: {$lang}\nquestion: {$question}\ntoday: {$today->format('Y-m-d')}\nDo not calculate the Balinese calendar.",
                 ['title' => 'CalendarIntent']
             );
             if (! is_array($response->json) || ! isset($response->json['intent'])) {
-                return ['intent' => 'needs_form', 'activity' => null, 'date_iso' => null, 'date_from' => null, 'date_to' => null, 'relative_expr' => null, 'rerahinan' => null, 'lang' => $lang];
+                return $keyword['intent'] === 'out_of_scope'
+                    ? ['intent' => 'needs_form', 'activity' => null, 'date_iso' => null, 'date_from' => null, 'date_to' => null, 'relative_expr' => null, 'rerahinan' => null, 'lang' => $lang]
+                    : $keyword;
             }
 
-            return $this->normalizeIntent($response->json, $lang);
+            return $this->mergeIntent($this->normalizeIntent($response->json, $lang), $keyword);
         } catch (Throwable) {
-            return ['intent' => 'needs_form', 'activity' => null, 'date_iso' => null, 'date_from' => null, 'date_to' => null, 'relative_expr' => null, 'rerahinan' => null, 'lang' => $lang];
+            return $keyword['intent'] === 'out_of_scope'
+                ? ['intent' => 'needs_form', 'activity' => null, 'date_iso' => null, 'date_from' => null, 'date_to' => null, 'relative_expr' => null, 'rerahinan' => null, 'lang' => $lang]
+                : $keyword;
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $parsed
+     * @param  array<string, mixed>  $keyword
+     * @return array<string, mixed>
+     */
+    private function mergeIntent(array $parsed, array $keyword): array
+    {
+        if (in_array($parsed['intent'], ['out_of_scope', 'needs_form'], true) && ! in_array($keyword['intent'], ['out_of_scope', 'needs_form'], true)) {
+            return $keyword;
+        }
+        if ($parsed['activity'] === null && is_string($keyword['activity'])) {
+            $parsed['activity'] = $keyword['activity'];
+        }
+        if (($parsed['relative_expr'] === null || $parsed['relative_expr'] === '') && is_string($keyword['relative_expr'])) {
+            $parsed['relative_expr'] = $keyword['relative_expr'];
+        }
+        if ($parsed['intent'] === 'info_tanggal' && $keyword['intent'] === 'hari_baik') {
+            $parsed['intent'] = 'hari_baik';
+        }
+
+        return $parsed;
     }
 
     /**
@@ -191,6 +223,16 @@ final class AskService
         $activity = $raw['activity'] ?? null;
         if (is_string($activity)) {
             $activity = str_replace([' ', '-'], '_', mb_strtolower(trim($activity)));
+            $activity = [
+                'menikah' => 'nikah',
+                'pernikahan' => 'nikah',
+                'perkawinan' => 'nikah',
+                'kawin' => 'nikah',
+                'pawiwahan' => 'nikah',
+                'wedding' => 'nikah',
+                'marry' => 'nikah',
+                'marriage' => 'nikah',
+            ][$activity] ?? $activity;
             if ($activity === '') {
                 $activity = null;
             }
@@ -246,11 +288,21 @@ final class AskService
         if (is_string($intent['date_iso'])) {
             return ['from' => $intent['date_iso'], 'to' => $intent['date_iso']];
         }
+        if (($intent['relative_expr'] ?? null) === 'terdekat' && $intent['intent'] === 'hari_baik') {
+            $found = $this->findNextRecommended($intent, $today);
+            if ($found !== null) {
+                return ['from' => $found, 'to' => $found];
+            }
+        }
         $relative = $this->dates->resolve($intent['relative_expr'], $today);
         if ($relative !== null) {
             return $this->guardSpan($relative['from'], $relative['to'], $lang);
         }
         if ($intent['intent'] === 'hari_baik') {
+            $found = $this->findNextRecommended($intent, $today);
+            if ($found !== null) {
+                return ['from' => $found, 'to' => $found];
+            }
             $start = $today->modify('+1 day')->format('Y-m-d');
             $end = $today->modify('+14 day')->format('Y-m-d');
 
@@ -286,6 +338,27 @@ final class AskService
         }
 
         return ['from' => $from, 'to' => $to];
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     */
+    private function findNextRecommended(array $intent, DateTimeImmutable $today): ?string
+    {
+        if (! is_string($intent['activity'] ?? null)) {
+            return null;
+        }
+        $ruleRows = CalendarRule::query()->where('status', 'validated')->get()->map->toEngineArray()->all();
+        for ($i = 1; $i <= 366; $i++) {
+            $day = $today->modify('+'.$i.' day');
+            $described = $this->engine->describe($day, SasihDay::payloadFor($day->format('Y-m-d')));
+            $matched = $this->rules->match($described, $ruleRows, $intent['activity']);
+            if ($this->recommended($matched, $intent)) {
+                return $day->format('Y-m-d');
+            }
+        }
+
+        return null;
     }
 
     private function findNext(?string $code, DateTimeImmutable $today, bool $forward): ?string
@@ -363,8 +436,15 @@ final class AskService
             : 'Mesin kalender (tanggal dihitung, bukan tebakan model bahasa):';
         if ($intent['intent'] === 'hari_baik' && ! is_string($intent['activity'])) {
             $lines[] = $lang === 'en'
-                ? 'No activity was recognized. The validated rules currently cover opening a business (buka_usaha). The days below are descriptive only.'
-                : 'Kegiatan belum dikenali. Aturan yang sudah divalidasi saat ini mencakup buka usaha. Hari di bawah ini hanya bersifat deskriptif.';
+                ? 'No activity was recognized. The validated subset currently covers opening a business (buka_usaha) and marriage (nikah). The days below are descriptive only.'
+                : 'Kegiatan belum dikenali. Subset aturan yang tervalidasi saat ini mencakup buka usaha dan nikah. Hari di bawah ini hanya bersifat deskriptif.';
+        }
+        $recommendedDays = array_values(array_filter($days, fn (array $day) => ! empty($day['recommended'])));
+        if ($intent['intent'] === 'hari_baik' && $recommendedDays !== []) {
+            $first = $recommendedDays[0];
+            $lines[] = $lang === 'en'
+                ? 'Nearest day in the validated subset: '.$first['date'].' ('.$first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'].'). This is not a decision.'
+                : 'Hari terdekat pada subset aturan yang tervalidasi: '.$first['date'].' ('.$first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'].'). Ini bukan keputusan.';
         }
         $anyRecommended = false;
         foreach ($days as $day) {

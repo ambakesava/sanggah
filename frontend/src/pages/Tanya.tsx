@@ -30,6 +30,7 @@ const chips = [
   ['Upacara apa tanggal 17 Juni 2026?', 'Is there a ceremony on 17 June 2026?'],
   ['Hari baik buka usaha minggu depan?', 'A good day to open a shop next week?'],
   ['Kapan Galungan berikutnya?', 'When is the next Galungan?'],
+  ['Kapan hari terbaik terdekat untuk nikah?', 'When is the nearest good day to get married?'],
 ]
 
 export default function Tanya() {
@@ -96,6 +97,7 @@ export default function Tanya() {
           <select className="tap rounded-xl border border-line bg-card px-2" value={form.activity} onChange={(e) => setForm({ ...form, activity: e.target.value })}>
             <option value="buka_usaha">{tx('Buka usaha', 'Open a business')}</option>
             <option value="pindah_rumah">{tx('Pindah rumah', 'Move house')}</option>
+            <option value="nikah">{tx('Nikah', 'Get married')}</option>
           </select>
           <input className="tap rounded-xl border border-line px-2" type="date" required value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} />
           <input className="tap rounded-xl border border-line px-2" type="date" required value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} />

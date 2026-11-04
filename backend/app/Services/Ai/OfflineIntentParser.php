@@ -35,7 +35,8 @@ final class OfflineIntentParser
                 'lang' => $lang === 'en' ? 'en' : 'id',
             ];
         }
-        if ($this->containsAny($lower, ['hari baik', 'dewasa ayu', 'good day', 'auspicious'])) {
+        if ($this->containsAny($lower, ['hari baik', 'hari terbaik', 'hari bagus', 'best day', 'good day', 'dewasa ayu', 'auspicious'])
+            || ($activity !== null && $this->containsAny($lower, ['kapan', 'when', 'deket', 'dekat', 'terdekat', 'nearest', 'hari ']))) {
             $intent = 'hari_baik';
         } elseif ($this->containsAny($lower, ['upacara', 'ceremony', 'hari raya', 'holiday'])) {
             $intent = 'cek_upacara';
@@ -65,7 +66,7 @@ final class OfflineIntentParser
             'bali', 'upacara', 'ceremony', 'hari ', 'hari?', 'wuku', 'kalender', 'calendar',
             'galungan', 'kuningan', 'nyepi', 'pagerwesi', 'saraswati', 'sasih', 'dewasa',
             'usaha', 'business', 'pindah', 'tanggal', 'june', 'juni', 'juli', 'pura', 'temple',
-            'pawukon', 'saptawara',
+            'pawukon', 'saptawara', 'nikah', 'menikah', 'kawin', 'wedding', 'marry',
         ]);
     }
 
@@ -79,6 +80,9 @@ final class OfflineIntentParser
         }
         if ($this->containsAny($lower, ['menanam', 'tanam', 'plant'])) {
             return 'menanam';
+        }
+        if ($this->containsAny($lower, ['menikah', 'pernikahan', 'perkawinan', 'pawiwahan', 'nikah', 'kawin', 'wedding', 'marry', 'marriage'])) {
+            return 'nikah';
         }
 
         return null;
@@ -114,6 +118,9 @@ final class OfflineIntentParser
 
     private function relative(string $lower): ?string
     {
+        if ($this->containsAny($lower, ['paling deket', 'paling dekat', 'terdekat', 'deket', 'nearest', 'soonest'])) {
+            return 'terdekat';
+        }
         foreach (['minggu depan', 'next week', 'minggu ini', 'this week', 'bulan depan', 'next month', 'besok', 'tomorrow', 'lusa', 'hari ini', 'today'] as $phrase) {
             if (str_contains($lower, $phrase)) {
                 return $phrase;

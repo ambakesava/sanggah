@@ -145,7 +145,7 @@ Ini kata sandi demo lokal, bukan rahasia produksi. Ganti sebelum penyebaran publ
 - Retrieval adalah pencocokan leksikal, bukan basis vektor. `vector_id` kosong. Endpoint ingest admin hanya menandai chunk sebagai `lexical-v1`.
 - Tabel sasih dan upacara mencakup 2026. Tanggal 2027 tidak diisi sebelum ada surat resmi.
 - Siwa Ratri pada surat Bimas Hindu jatuh 17 Januari 2026. kalenderbali.org menaruh Tilem Kepitu pada 18 Januari 2026. Keduanya dicatat, tidak digabung diam-diam.
-- Aturan dewasa ayu hanya subset kecil yang bersumber (Ayu Nulus, Sri Tumpuk, Ala Dahat, larangan kerja pada Nyepi). Bukan sistem wariga lengkap dan bukan keputusan.
+- Aturan dewasa ayu hanya subset kecil yang bersumber (Ayu Nulus dan Sri Tumpuk untuk buka usaha; Amerta Bumi, Kamajaya, dan Derman Bagia untuk nikah; Ala Dahat; larangan kerja pada Nyepi). Bukan sistem wariga lengkap dan bukan keputusan.
 - Etiquette Check (foto pakaian) di luar cakupan. Riwayat pindai pengguna dan draf tips AI untuk admin belum dibuat sebagai alur penuh. Umpan balik dan unduhan `.ics` sudah ada.
 - Foto berizin dihapus saat izin dicabut. Belum ada pekerjaan terjadwal yang menghapus berkas berdasarkan umur.
 - Ejaan sasih mengikuti kalenderbali.org untuk tahun ini (misalnya Kepitu, Kewulu, Kedasa). Ejaan lain seperti Kapitu atau Kadasa juga dipakai di sumber berbeda.
@@ -155,7 +155,7 @@ Ini kata sandi demo lokal, bukan rahasia produksi. Ganti sebelum penyebaran publ
 - Laravel, Sanctum, React, Vite, Tailwind CSS, dan PHPUnit. Lisensi masing-masing paket.
 - Algoritma pawukon: Nachum Dershowitz & Edward M. Reingold, *Calendrical Calculations* (Cambridge University Press, 2018), dengan pemeriksaan silang ringkasan tabel di Wikipedia "Pawukon calendar".
 - Tanggal hari raya 2026: surat Ditjen Bimas Hindu Kemenag RI No. B-253/DJ.VI/Dt.VI.I.3/BA.03/09/2025, sebagaimana dikutip detikNews, 5 Januari 2026.
-- Purnama dan Tilem 2026: kalenderbali.org. Subset Ala-Ayuning Dewasa (Ayu Nulus) dari halaman referensi situs yang sama.
+- Purnama dan Tilem 2026: kalenderbali.org. Subset Ala-Ayuning Dewasa (Ayu Nulus, Amerta Bumi, Kamajaya, Derman Bagia) dari halaman referensi situs yang sama.
 - Catatan Ala Dahat: sastrabali.com, "Rumus menghitung wariga".
 - Isi kartu objek adalah parafrase konservatif yang merujuk Fred B. Eiseman Jr., *Bali: Sekala & Niskala*, Volume I (Periplus), dan untuk gapura, Barong, serta Rangda juga Miguel Covarrubias, *Island of Bali* (1937). Bukan salinan halaman. Beberapa pengamatan Covarrubias sudah tua dan hanya dipakai untuk bentuk, bukan untuk aturan yang berubah.
 - Huruf: Fraunces dan Source Sans 3 (Google Fonts).
