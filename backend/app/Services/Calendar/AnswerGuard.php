@@ -13,6 +13,33 @@ final class AnswerGuard
     /**
      * @param  list<array<string, mixed>>  $days
      */
+    /**
+     * Removes calendar dates the engine did not return.
+     * Wuku and holy-day checks stay in accepts().
+     *
+     * @param  list<array<string, mixed>>  $days
+     */
+    public function stripUnknownDates(string $answer, array $days): string
+    {
+        $allowed = [];
+        foreach ($days as $day) {
+            if (! empty($day['date'])) {
+                $allowed[(string) $day['date']] = true;
+            }
+        }
+        $result = $answer;
+        foreach ($this->datesIn($answer) as $iso) {
+            if (! isset($allowed[$iso])) {
+                $result = $this->eraseDate($result, $iso);
+            }
+        }
+        $result = preg_replace('/[ \t]{2,}/', ' ', $result) ?? $result;
+        $result = preg_replace('/\s+([,.;:!?])/', '$1', $result) ?? $result;
+        $result = preg_replace("/\n{3,}/", "\n\n", $result) ?? $result;
+
+        return trim($result);
+    }
+
     public function accepts(string $answer, array $days): bool
     {
         if (trim($answer) === '' || $days === []) {
@@ -122,6 +149,31 @@ final class AnswerGuard
         }
 
         return array_values(array_unique($found));
+    }
+
+    private function eraseDate(string $answer, string $iso): string
+    {
+        [$year, $month, $day] = array_map(intval(...), explode('-', $iso));
+        $answer = str_replace($iso, '', $answer);
+        $answer = preg_replace('/\b0?'.$day.'[\/.]0?'.$month.'[\/.]'.$year.'\b/', '', $answer) ?? $answer;
+        $names = match ($month) {
+            1 => 'january|januari',
+            2 => 'february|februari',
+            3 => 'march|maret',
+            4 => 'april',
+            5 => 'may|mei',
+            6 => 'june|juni',
+            7 => 'july|juli',
+            8 => 'august|agustus',
+            9 => 'september',
+            10 => 'october|oktober',
+            11 => 'november',
+            12 => 'december|desember',
+            default => 'month',
+        };
+        $answer = preg_replace('/\b0?'.$day.'\s+(?:'.$names.')\s+'.$year.'\b/i', '', $answer) ?? $answer;
+
+        return $answer;
     }
 
     private function mentions(string $answer, string $name): bool

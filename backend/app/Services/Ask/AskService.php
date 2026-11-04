@@ -108,23 +108,25 @@ final class AskService
                     ])->all(),
                 ])->all();
             $described['recommended'] = $this->recommended($matched, $intent);
+            $described['rerahinan_labels'] = array_map(
+                fn (string $code) => $this->rerahinanLabel($code, $lang),
+                $described['rerahinan']
+            );
             $described['kalenderbali'] = $this->remoteByDate[$iso] ?? [];
             $engineDays[] = $described;
         }
 
-        $template = $this->template($intent, $engineDays, $lang, $disclaimer, $today);
+        $template = $this->template($intent, $engineDays, $lang, $today);
         $answer = $template;
         $mode = 'template';
         if ($this->ai->providerName() !== 'mock') {
-            $prose = $this->explainWithModel((string) ($input['question'] ?? ''), $intent, $engineDays, $today);
+            $prose = $this->explainWithModel((string) ($input['question'] ?? ''), $intent, $engineDays, $today, $lang);
             if ($prose !== null) {
                 $answer = $prose;
                 $mode = 'llm';
             }
         }
-        if (! str_contains($answer, $lang === 'en' ? 'pemangku' : 'pemangku')) {
-            $answer = rtrim($answer)."\n\n".$disclaimer;
-        }
+        $answer = trim(str_replace($disclaimer, '', $answer));
 
         return [
             'intent' => $intent,
@@ -214,7 +216,7 @@ final class AskService
      * @param  array<string, mixed>  $intent
      * @param  list<array<string, mixed>>  $days
      */
-    private function explainWithModel(string $question, array $intent, array $days, DateTimeImmutable $today): ?string
+    private function explainWithModel(string $question, array $intent, array $days, DateTimeImmutable $today, string $lang): ?string
     {
         $context = [
             'question' => $question,
@@ -222,31 +224,32 @@ final class AskService
             'activity' => $intent['activity'] ?? null,
             'days' => array_map(fn (array $day) => [
                 'date' => $day['date'],
+                'date_label' => $this->humanDate((string) $day['date'], $lang),
                 'wuku' => $day['wuku'],
                 'saptawara' => $day['saptawara'],
                 'pancawara' => $day['pancawara'],
-                'triwara' => $day['triwara'],
                 'sasih' => $day['sasih'],
                 'penanggal_pangelong' => $day['penanggal_pangelong'],
-                'rerahinan' => $day['rerahinan'],
+                'rerahinan' => $day['rerahinan_labels'] ?? [],
                 'recommended' => (bool) ($day['recommended'] ?? false),
-                'rules' => $day['rules'],
-                'ceremonies' => $day['ceremonies'],
-                'kalenderbali' => $day['kalenderbali'] ?? [],
+                'rules' => array_map(fn (array $rule) => $rule['name'], $day['rules']),
+                'ceremonies' => array_map(fn (array $ceremony) => $ceremony['name'], $day['ceremonies']),
             ], $days),
         ];
         $system = $this->prompts->get('calendar');
         $user = "CONTEXT:\n".json_encode($context, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
         try {
-            $text = $this->prose($system, $user);
-            if ($text !== null && $this->guard->accepts($text, $days)) {
+            $text = $this->guardedProse($system, $user, $days, $lang);
+            if ($text !== null) {
                 return $text;
             }
-            $retry = $this->prose(
+            $retry = $this->guardedProse(
                 $system."\n\nThe previous reply was rejected because it added a date or a name that is not in CONTEXT. Rewrite the answer using only CONTEXT.",
-                $user
+                $user,
+                $days,
+                $lang
             );
-            if ($retry !== null && $this->guard->accepts($retry, $days)) {
+            if ($retry !== null) {
                 return $retry;
             }
         } catch (AiException | Throwable) {
@@ -254,6 +257,20 @@ final class AskService
         }
 
         return null;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $days
+     */
+    private function guardedProse(string $system, string $user, array $days, string $lang): ?string
+    {
+        $text = $this->prose($system, $user);
+        if ($text === null) {
+            return null;
+        }
+        $text = $this->humanizeCodes($this->guard->stripUnknownDates($text, $days), $lang);
+
+        return $this->guard->accepts($text, $days) ? $text : null;
     }
 
     private function prose(string $system, string $user): ?string
@@ -348,6 +365,13 @@ final class AskService
      */
     private function targetDays(array $intent, DateTimeImmutable $today, string $lang): array
     {
+        if ($this->searchesActivityWindow($intent)) {
+            $dates = $this->activityDates($intent, $today);
+            if ($dates !== []) {
+                return array_map(fn (string $iso) => new DateTimeImmutable($iso), $dates);
+            }
+        }
+
         if ($intent['intent'] === 'rerahinan_berikutnya' && ! empty($intent['year'])) {
             $remote = $this->rememberRemote($intent['rerahinan'] ?? '', (int) $intent['year']);
             $found = $remote !== []
@@ -461,10 +485,13 @@ final class AskService
             if ($found !== null) {
                 return ['from' => $found, 'to' => $found];
             }
+            $notable = $this->findNotableDates($today, 90, 3);
+            if ($notable !== []) {
+                return ['from' => $notable[0], 'to' => $notable[array_key_last($notable)]];
+            }
             $start = $today->modify('+1 day')->format('Y-m-d');
-            $end = $today->modify('+14 day')->format('Y-m-d');
 
-            return ['from' => $start, 'to' => $end];
+            return ['from' => $start, 'to' => $start];
         }
         if ($intent['intent'] === 'cek_upacara' || $intent['intent'] === 'info_tanggal') {
             throw new ApiProblem(
@@ -503,12 +530,56 @@ final class AskService
      */
     private function findNextRecommended(array $intent, DateTimeImmutable $today): ?string
     {
-        if (! is_string($intent['activity'] ?? null)) {
-            return null;
+        $found = $this->findRecommendedDates($intent, $today, 180, 1);
+
+        return $found[0] ?? null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     */
+    private function searchesActivityWindow(array $intent): bool
+    {
+        if (($intent['intent'] ?? null) !== 'hari_baik' || ! is_string($intent['activity'] ?? null)) {
+            return false;
+        }
+        if (is_string($intent['date_from'] ?? null) || is_string($intent['date_iso'] ?? null)) {
+            return false;
+        }
+        $relative = $intent['relative_expr'] ?? null;
+
+        return ! is_string($relative) || $relative === '' || $relative === 'terdekat';
+    }
+
+    /**
+     * Up to three recommended days inside 180 days, or three notable days inside 90.
+     *
+     * @param  array<string, mixed>  $intent
+     * @return list<string>
+     */
+    private function activityDates(array $intent, DateTimeImmutable $today): array
+    {
+        $found = $this->findRecommendedDates($intent, $today, 180, 3);
+        if ($found !== []) {
+            return $found;
+        }
+
+        return $this->findNotableDates($today, 90, 3);
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     * @return list<string>
+     */
+    private function findRecommendedDates(array $intent, DateTimeImmutable $today, int $limit, int $max): array
+    {
+        if (! is_string($intent['activity'] ?? null) || $max < 1) {
+            return [];
         }
         $ruleRows = CalendarRule::query()->where('status', 'validated')->get()->map->toEngineArray()->all();
-        $seek = function (int $direction) use ($intent, $today, $ruleRows): ?string {
-            for ($i = 1; $i <= 366; $i++) {
+        $seek = function (int $direction) use ($intent, $today, $ruleRows, $limit, $max): array {
+            $found = [];
+            for ($i = 1; $i <= $limit && count($found) < $max; $i++) {
                 $day = $today->modify(($direction > 0 ? '+' : '-').$i.' day');
                 $described = $this->engine->describe($day, SasihDay::payloadFor($day->format('Y-m-d')));
                 if ($described['phase'] === null) {
@@ -516,14 +587,52 @@ final class AskService
                 }
                 $matched = $this->rules->match($described, $ruleRows, $intent['activity']);
                 if ($this->recommended($matched, $intent)) {
-                    return $day->format('Y-m-d');
+                    $found[] = $day->format('Y-m-d');
                 }
             }
 
-            return null;
+            return $found;
         };
+        $future = $seek(1);
 
-        return $seek(1) ?? $seek(-1);
+        return $future !== [] ? $future : $seek(-1);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function findNotableDates(DateTimeImmutable $today, int $limit, int $max): array
+    {
+        $found = [];
+        for ($i = 1; $i <= $limit && count($found) < $max; $i++) {
+            $day = $today->modify('+'.$i.' day');
+            $described = $this->engine->describe($day, SasihDay::payloadFor($day->format('Y-m-d')));
+            if ($this->isNotable($described)) {
+                $found[] = $day->format('Y-m-d');
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * @param  array<string, mixed>  $day
+     */
+    private function isNotable(array $day): bool
+    {
+        foreach ((array) ($day['rerahinan'] ?? []) as $name) {
+            if (! is_string($name)) {
+                continue;
+            }
+            if (in_array($name, ['tilem', 'purnama', 'galungan', 'kuningan', 'nyepi', 'saraswati', 'pagerwesi', 'kajeng_keliwon'], true)) {
+                return true;
+            }
+            if (str_starts_with($name, 'tumpek')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function findNext(?string $code, DateTimeImmutable $today, bool $forward): ?string
@@ -593,76 +702,218 @@ final class AskService
      * @param  array<string, mixed>  $intent
      * @param  list<array<string, mixed>>  $days
      */
-    private function template(array $intent, array $days, string $lang, string $disclaimer, DateTimeImmutable $today): string
+    private function template(array $intent, array $days, string $lang, DateTimeImmutable $today): string
     {
-        $lines = [];
-        $lines[] = $lang === 'en'
-            ? 'Calendar engine (dates are computed, not guessed by the model):'
-            : 'Mesin kalender (tanggal dihitung, bukan tebakan model bahasa):';
-        if ($intent['intent'] === 'hari_baik' && ! is_string($intent['activity'])) {
-            $lines[] = $lang === 'en'
-                ? 'No activity was recognized. The validated subset currently covers opening a business (buka_usaha) and marriage (nikah). The days below are descriptive only.'
-                : 'Kegiatan belum dikenali. Subset aturan yang tervalidasi saat ini mencakup buka usaha dan nikah. Hari di bawah ini hanya bersifat deskriptif.';
-        }
-        $recommendedDays = array_values(array_filter($days, fn (array $day) => ! empty($day['recommended'])));
-        if ($intent['intent'] === 'hari_baik' && $recommendedDays !== []) {
-            $first = $recommendedDays[0];
+        $recommended = array_values(array_filter($days, fn (array $day) => ! empty($day['recommended'])));
+        $activity = $this->activityLabel(is_string($intent['activity'] ?? null) ? $intent['activity'] : null, $lang);
+        $ask = $lang === 'en'
+            ? 'This is not a decision. Please ask a pemangku or sulinggih.'
+            : 'Ini bukan keputusan. Tanyakan juga ke pemangku atau sulinggih.';
+
+        if ($intent['intent'] === 'hari_baik' && $recommended !== []) {
+            $first = $recommended[0];
+            $when = $this->humanDate((string) $first['date'], $lang).' ('.$first['date'].')';
+            $place = $first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'];
+            $rules = $this->ruleNames($first, $lang);
             $passed = $first['date'] < $today->format('Y-m-d');
-            $lines[] = $passed
-                ? ($lang === 'en'
-                    ? 'Inside the curated sasih table, the matching day is '.$first['date'].' ('.$first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'].'). That date has passed, and no later match is in the table.'
-                    : 'Di tabel sasih yang ada, hari yang cocok adalah '.$first['date'].' ('.$first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'].'). Tanggal itu sudah lewat, dan tidak ada kecocokan lagi sampai akhir tabel.')
-                : ($lang === 'en'
-                    ? 'Nearest day in the validated subset: '.$first['date'].' ('.$first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'].'). This is not a decision.'
-                    : 'Hari terdekat pada subset aturan yang tervalidasi: '.$first['date'].' ('.$first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'].'). Ini bukan keputusan.');
+            if ($lang === 'en') {
+                $lead = $passed
+                    ? "The matching day for {$activity} in the curated table is {$when}, {$place}. That date has already passed."
+                    : "The nearest day for {$activity} is {$when}, {$place}.";
+                if ($rules !== '') {
+                    $lead .= " The published rule is {$rules}.";
+                }
+
+                return $lead.' '.$ask;
+            }
+            $lead = $passed
+                ? "Di tabel yang ada, hari untuk {$activity} yang cocok adalah {$when}, {$place}. Tanggal itu sudah lewat."
+                : "Hari terdekat untuk {$activity} adalah {$when}, {$place}.";
+            if ($rules !== '') {
+                $lead .= " Aturannya {$rules}.";
+            }
+
+            return $lead.' '.$ask;
         }
-        $anyRecommended = false;
+
+        if ($intent['intent'] === 'hari_baik') {
+            $notes = $this->notablePhrases($days, $lang);
+            if ($lang === 'en') {
+                $lead = "In the range I checked, the validated subset does not mark a good day for {$activity}.";
+                if ($notes !== '') {
+                    $lead .= " Nearby days worth knowing: {$notes}.";
+                }
+
+                return $lead.' '.$ask;
+            }
+            $lead = "Di rentang yang saya cek, subset dewasa yang tervalidasi belum menandai hari baik untuk {$activity}.";
+            if ($notes !== '') {
+                $lead .= " Yang terdekat dan patut dicatat: {$notes}.";
+            }
+
+            return $lead.' '.$ask;
+        }
+
+        $notes = $this->notablePhrases($days, $lang);
+        if ($notes === '') {
+            $only = $days[0] ?? null;
+            if (is_array($only)) {
+                $when = $this->humanDate((string) $only['date'], $lang).' ('.$only['date'].')';
+                $place = $only['saptawara'].' '.$only['pancawara'].', wuku '.$only['wuku'];
+
+                return $lang === 'en'
+                    ? "On {$when} it is {$place}. {$ask}"
+                    : "Pada {$when} hari itu {$place}. {$ask}";
+            }
+
+            return $ask;
+        }
+
+        return $lang === 'en'
+            ? "Here is what falls in that range: {$notes}. {$ask}"
+            : "Yang jatuh pada rentang itu: {$notes}. {$ask}";
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $days
+     */
+    private function notablePhrases(array $days, string $lang): string
+    {
+        $phrases = [];
         foreach ($days as $day) {
-            $rerahinan = $day['rerahinan'] !== [] ? implode(', ', $day['rerahinan']) : ($lang === 'en' ? 'none' : 'tidak ada');
-            $sasih = $day['sasih'] ? ' · sasih '.$day['sasih'].($day['penanggal_pangelong'] ? ' '.$day['penanggal_pangelong'] : '') : '';
-            $lines[] = sprintf(
-                '- %s: %s %s, wuku %s, pawukon day %d. %s: %s%s',
-                $day['date'],
-                $day['saptawara'],
-                $day['pancawara'],
-                $day['wuku'],
-                $day['pawukon_day'],
-                $lang === 'en' ? 'Holy days' : 'Rerahinan',
-                $rerahinan,
-                $sasih
-            );
-            foreach ($day['ceremonies'] as $ceremony) {
-                $lines[] = $lang === 'en'
-                    ? '  Ceremony alert: '.$ceremony['name'].' (/upacara/'.$ceremony['slug'].')'
-                    : '  Ceremony alert: '.$ceremony['name'].' (/upacara/'.$ceremony['slug'].')';
-                foreach ($ceremony['sources'] ?? [] as $source) {
-                    $lines[] = ($lang === 'en' ? '  Published source: ' : '  Sumber terbit: ')
-                        .$source['title']
-                        .($source['url'] ? ' '.$source['url'] : '');
+            if (count($phrases) >= 3) {
+                break;
+            }
+            $names = array_values(array_filter(
+                (array) ($day['rerahinan_labels'] ?? []),
+                fn ($name) => is_string($name) && $name !== ''
+            ));
+            if ($names === []) {
+                foreach ((array) ($day['ceremonies'] ?? []) as $ceremony) {
+                    if (is_array($ceremony) && is_string($ceremony['name'] ?? null)) {
+                        $names[] = $ceremony['name'];
+                    }
                 }
             }
-            foreach ($day['kalenderbali'] ?? [] as $event) {
-                $lines[] = ($lang === 'en' ? '  kalenderbali.org: ' : '  kalenderbali.org: ')
-                    .$event['name'].' '.$event['url'];
+            if ($names === []) {
+                continue;
             }
-            foreach ($day['rules'] as $rule) {
-                $lines[] = '  '.($lang === 'en' ? 'Rule' : 'Aturan').': '.$rule['name'].' ['.$rule['effect'].']';
-            }
-            if (! empty($day['recommended'])) {
-                $anyRecommended = true;
-                $lines[] = $lang === 'en'
-                    ? '  Marked by a validated good-day rule for this activity, and no blocking rule fired.'
-                    : '  Terpicu aturan hari baik yang tervalidasi untuk kegiatan ini, dan tidak ada aturan penghalang.';
-            }
+            $when = $this->humanDate((string) $day['date'], $lang);
+            $phrases[] = $lang === 'en'
+                ? implode(' and ', $names).' on '.$when
+                : implode(' dan ', $names).' pada '.$when;
         }
-        if ($intent['intent'] === 'hari_baik' && is_string($intent['activity']) && ! $anyRecommended) {
-            $lines[] = $lang === 'en'
-                ? 'No validated good-day rule matched this range. That is not a "bad day" verdict. Ask a pemangku or sulinggih.'
-                : 'Tidak ada aturan hari baik yang tervalidasi pada rentang ini. Ini bukan vonis hari buruk. Tanyakan kepada pemangku atau sulinggih.';
-        }
-        $lines[] = $disclaimer;
 
-        return implode("\n", $lines);
+        if ($phrases === []) {
+            return '';
+        }
+        if (count($phrases) === 1) {
+            return $phrases[0];
+        }
+        $last = array_pop($phrases);
+
+        return implode(', ', $phrases).($lang === 'en' ? ', and ' : ', serta ').$last;
+    }
+
+    /**
+     * @param  array<string, mixed>  $day
+     */
+    private function ruleNames(array $day, string $lang): string
+    {
+        $names = [];
+        foreach ((array) ($day['rules'] ?? []) as $rule) {
+            if (! is_array($rule) || ($rule['effect'] ?? null) !== 'good') {
+                continue;
+            }
+            $name = trim((string) preg_replace('/\s*\(.*$/', '', (string) ($rule['name'] ?? '')));
+            if ($name !== '') {
+                $names[] = $name;
+            }
+        }
+        $names = array_slice(array_values(array_unique($names)), 0, 2);
+        if (count($names) === 2) {
+            return $names[0].($lang === 'en' ? ' and ' : ' dan ').$names[1];
+        }
+
+        return $names[0] ?? '';
+    }
+
+    private function activityLabel(?string $activity, string $lang): string
+    {
+        $labels = [
+            'buka_usaha' => ['id' => 'buka usaha', 'en' => 'opening a business'],
+            'pindah_rumah' => ['id' => 'pindah rumah', 'en' => 'moving house'],
+            'membangun' => ['id' => 'membangun rumah', 'en' => 'building a house'],
+            'nikah' => ['id' => 'menikah', 'en' => 'getting married'],
+            'potong_gigi' => ['id' => 'potong gigi', 'en' => 'tooth filing'],
+            'potong_rambut' => ['id' => 'potong rambut', 'en' => 'a hair cutting'],
+            'ngaben' => ['id' => 'ngaben', 'en' => 'ngaben'],
+            'menanam' => ['id' => 'menanam', 'en' => 'planting'],
+        ];
+        if ($activity === null || ! isset($labels[$activity])) {
+            return $lang === 'en' ? 'that activity' : 'kegiatan itu';
+        }
+
+        return $labels[$activity][$lang === 'en' ? 'en' : 'id'];
+    }
+
+    private function humanDate(string $iso, string $lang): string
+    {
+        $date = DateTimeImmutable::createFromFormat('!Y-m-d', $iso);
+        if ($date === false) {
+            return $iso;
+        }
+        $months = $lang === 'en'
+            ? [1 => 'January', 2 => 'February', 3 => 'March', 4 => 'April', 5 => 'May', 6 => 'June', 7 => 'July', 8 => 'August', 9 => 'September', 10 => 'October', 11 => 'November', 12 => 'December']
+            : [1 => 'Januari', 2 => 'Februari', 3 => 'Maret', 4 => 'April', 5 => 'Mei', 6 => 'Juni', 7 => 'Juli', 8 => 'Agustus', 9 => 'September', 10 => 'Oktober', 11 => 'November', 12 => 'Desember'];
+
+        return (int) $date->format('j').' '.$months[(int) $date->format('n')].' '.$date->format('Y');
+    }
+
+    private function rerahinanLabel(string $code, string $lang): string
+    {
+        $labels = [
+            'kajeng_keliwon' => 'Kajeng Kliwon',
+            'tumpek_landep' => 'Tumpek Landep',
+            'tumpek_uduh' => 'Tumpek Uduh',
+            'tumpek_krulut' => 'Tumpek Krulut',
+            'tumpek_kandang' => 'Tumpek Kandang',
+            'tumpek_wayang' => 'Tumpek Wayang',
+            'buda_cemeng' => 'Buda Cemeng',
+            'anggara_kasih' => 'Anggara Kasih',
+            'galungan' => 'Galungan',
+            'kuningan' => 'Kuningan',
+            'pagerwesi' => 'Pagerwesi',
+            'saraswati' => 'Saraswati',
+            'purnama' => $lang === 'en' ? 'Purnama' : 'Purnama',
+            'tilem' => 'Tilem',
+            'nyepi' => 'Nyepi',
+            'penyekeban_galungan' => 'Penyekeban Galungan',
+            'penyajaan_galungan' => 'Penyajaan Galungan',
+            'penampahan_galungan' => 'Penampahan Galungan',
+            'umanis_galungan' => 'Umanis Galungan',
+            'penampahan_kuningan' => 'Penampahan Kuningan',
+            'ngembak_geni' => 'Ngembak Geni',
+            'pengerupukan' => 'Pengerupukan',
+            'siwa_ratri' => 'Siwa Ratri',
+        ];
+
+        return $labels[$code] ?? ucwords(str_replace('_', ' ', $code));
+    }
+
+    private function humanizeCodes(string $answer, string $lang): string
+    {
+        $codes = [
+            'kajeng_keliwon', 'tumpek_landep', 'tumpek_uduh', 'tumpek_krulut', 'tumpek_kandang',
+            'tumpek_wayang', 'buda_cemeng', 'anggara_kasih', 'penyekeban_galungan', 'penyajaan_galungan',
+            'penampahan_galungan', 'umanis_galungan', 'penampahan_kuningan', 'ngembak_geni',
+            'pengerupukan', 'siwa_ratri', 'kajeng keliwon',
+        ];
+        foreach ($codes as $code) {
+            $answer = str_ireplace($code, $this->rerahinanLabel(str_replace(' ', '_', $code), $lang), $answer);
+        }
+
+        return $answer;
     }
 
     private function cleanDate(mixed $value): ?string

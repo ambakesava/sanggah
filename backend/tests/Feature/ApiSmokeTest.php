@@ -118,6 +118,40 @@ class ApiSmokeTest extends TestCase
         $this->assertStringContainsString('kalenderbali.org/rerainan.php', $live->json('engine.days.0.kalenderbali.0.url'));
     }
 
+    public function test_ask_answer_is_prose_without_an_engine_dump(): void
+    {
+        $this->travelTo('2026-11-05 02:00:00');
+        $near = $this->postJson('/api/ask', [
+            'question' => 'hari baik untuk ngaben terdekat',
+            'lang' => 'id',
+        ])->assertOk();
+        $answer = (string) $near->json('answer');
+        $this->assertStringNotContainsString('pawukon day', strtolower($answer));
+        $this->assertStringNotContainsString('Calendar engine', $answer);
+        $this->assertStringNotContainsString('Mesin kalender', $answer);
+        $this->assertStringNotContainsString('kajeng_keliwon', $answer);
+        $this->assertStringNotContainsString((string) $near->json('disclaimer'), $answer);
+        $this->assertStringContainsString('pemangku', strtolower($answer));
+        $near->assertJsonPath('engine.days.0.recommended', true);
+        $near->assertJsonPath('engine.days.0.date', '2026-11-24');
+        $this->assertStringContainsString('2026-11-24', $answer);
+
+        $week = $this->postJson('/api/ask', [
+            'question' => 'hari baik untuk ngaben minggu depan',
+            'lang' => 'id',
+        ])->assertOk();
+        $text = (string) $week->json('answer');
+        $this->assertStringNotContainsString('pawukon day', strtolower($text));
+        $this->assertStringNotContainsString('kajeng_keliwon', $text);
+        $this->assertStringContainsString('Kajeng Kliwon', $text);
+        $this->assertStringContainsString('Tumpek Landep', $text);
+        $this->assertStringContainsString('pemangku', strtolower($text));
+        $this->assertStringNotContainsString((string) $week->json('disclaimer'), $text);
+        $this->assertFalse(collect($week->json('engine.days'))->contains(
+            fn (array $day) => ($day['recommended'] ?? false) === true
+        ));
+    }
+
     public function test_potong_gigi_returns_a_validated_day(): void
     {
         $this->travelTo('2026-11-05 02:00:00');

@@ -1,11 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api.ts'
 import { useLang } from '../lib/i18n.tsx'
+import type { Lang } from '../lib/i18n.tsx'
 
 type Day = {
   date: string
-  pawukon_day: number
   wuku: string
   saptawara: string
   pancawara: string
@@ -13,44 +13,71 @@ type Day = {
   sasih: string | null
   penanggal_pangelong: string | null
   rerahinan: string[]
+  rerahinan_labels?: string[]
   recommended?: boolean
   rules: { code: string; name: string; effect: string }[]
-  ceremonies: { slug: string; name: string }[]
 }
 type AskResponse = {
-  intent: { intent: string; activity: string | null; date_from?: string | null; date_to?: string | null }
+  intent: { intent: string; activity: string | null }
   engine: { days: Day[]; rules_version: string } | null
   answer: string
   answer_mode: string
   needs_form: boolean
   disclaimer: string
 }
+type Turn = { role: 'user' | 'assistant'; text: string; data?: AskResponse }
 
 const chips = [
-  ['Upacara apa tanggal 17 Juni 2026?', 'Is there a ceremony on 17 June 2026?'],
+  ['Kapan hari baik untuk nikah?', 'When is a good day to get married?'],
+  ['Hari baik untuk ngaben terdekat', 'Nearest good day for ngaben'],
+  ['Kapan hari baik untuk potong gigi?', 'When is a good day for tooth filing?'],
   ['Hari baik buka usaha minggu depan?', 'A good day to open a shop next week?'],
   ['Kapan Galungan berikutnya?', 'When is the next Galungan?'],
-  ['Kapan hari terbaik terdekat untuk nikah?', 'When is the nearest good day to get married?'],
-  ['Kapan hari baik untuk potong gigi?', 'When is a good day for tooth filing?'],
 ]
+
+const months = {
+  id: ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'],
+  en: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'],
+}
+
+function formatDate(iso: string, lang: Lang): string {
+  const [year, month, day] = iso.split('-').map(Number)
+  if (!year || !month || !day) return iso
+  return `${day} ${months[lang][month - 1]} ${year}`
+}
+
+function holyNames(day: Day): string {
+  const labels = (day.rerahinan_labels ?? []).filter(Boolean)
+  if (labels.length) return labels.join(', ')
+  return day.rerahinan.map((name) => name.replaceAll('_', ' ')).join(', ')
+}
 
 export default function Tanya() {
   const { lang, tx } = useLang()
   const [question, setQuestion] = useState('')
-  const [log, setLog] = useState<{ q: string; a: AskResponse }[]>([])
+  const [turns, setTurns] = useState<Turn[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [form, setForm] = useState({ activity: 'buka_usaha', from: '', to: '' })
+  const bottom = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [turns, busy])
 
   async function send(text: string, override?: Record<string, unknown>) {
+    const trimmed = text.trim()
+    if (!trimmed || busy) return
+    setQuestion('')
     setBusy(true)
     setError('')
+    setTurns((prev) => [...prev, { role: 'user', text: trimmed }])
     try {
       const data = await api<AskResponse>('/api/ask', {
         method: 'POST',
-        body: JSON.stringify({ question: text, lang, intent_override: override }),
+        body: JSON.stringify({ question: trimmed, lang, intent_override: override }),
       })
-      setLog((prev) => [...prev, { q: text, a: data }])
+      setTurns((prev) => [...prev, { role: 'assistant', text: data.answer, data }])
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -59,10 +86,13 @@ export default function Tanya() {
   }
 
   return (
-    <main>
+    <main className="flex min-h-[70vh] flex-col">
       <h2 className="font-display text-3xl">{tx('Tanya Dewasa Ayu', 'Ask Dewasa Ayu')}</h2>
-      <p className="mt-2 text-sm leading-relaxed">
-        {tx('Model hanya membaca maksud pertanyaan. Wuku, wewaran, dan hari raya dihitung mesin kalender.', 'The model only reads what you are asking. Wuku, wewaran, and holy days are computed by the calendar engine.')}
+      <p className="mt-2 text-sm leading-relaxed text-moss">
+        {tx(
+          'Tanyakan dalam bahasa sehari-hari. Tanggalnya dihitung dari wuku dan sasih, lalu dijelaskan seperti obrolan.',
+          'Ask in everyday language. The dates come from wuku and sasih, then get explained like a chat.',
+        )}
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
         {chips.map(([id, en]) => (
@@ -71,45 +101,126 @@ export default function Tanya() {
           </button>
         ))}
       </div>
-      <form className="mt-4 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (question.trim()) send(question.trim()) }}>
-        <input className="tap min-w-0 flex-1 rounded-xl border border-line bg-card px-3 text-base" value={question} onChange={(e) => setQuestion(e.target.value)} maxLength={500} placeholder={tx('Tulis pertanyaan', 'Write a question')} />
-        <button className="tap rounded-xl bg-ink px-4 text-paper" type="submit" disabled={busy}>{tx('Tanya', 'Ask')}</button>
-      </form>
-      {error && <p className="mt-3 text-sm text-brick" role="alert">{error}</p>}
-      <div className="mt-4 space-y-4" aria-live="polite">
-        {log.map((item, index) => (
-          <article key={index} className="rounded-2xl border border-line bg-card p-4">
-            <p className="text-sm font-semibold">{item.q}</p>
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{item.a.answer}</p>
-            {item.a.engine?.days?.slice(0, 8).map((day) => (
-              <Link key={day.date} to={`/kalender/${day.date}`} className="mt-2 block rounded-xl border border-line px-3 py-2 text-sm">
-                <span className="font-semibold">{day.date}</span> · {day.saptawara} {day.pancawara} · {day.wuku}
-                {day.rerahinan.length > 0 && <span> · {day.rerahinan.join(', ')}</span>}
-                {day.recommended && <span className="ml-2 text-moss">{tx('kandidat', 'candidate')}</span>}
-              </Link>
-            ))}
-            <p className="mt-2 text-xs text-moss">{item.a.disclaimer}</p>
-          </article>
+
+      <div className="mt-4 flex flex-1 flex-col gap-3" aria-live="polite">
+        {turns.length === 0 && (
+          <p className="text-sm text-moss">{tx('Pilih pertanyaan di atas, atau tulis sendiri di bawah.', 'Pick a question above, or write your own below.')}</p>
+        )}
+        {turns.map((turn, index) => (
+          <TurnView key={index} turn={turn} />
         ))}
+        {busy && (
+          <div className="flex justify-start">
+            <div className="rounded-2xl rounded-bl-md border border-line bg-card px-4 py-3" aria-label={tx('Sedang mengetik', 'Typing')}>
+              <span className="inline-flex gap-1">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-moss" />
+                <span className="h-2 w-2 animate-pulse rounded-full bg-moss [animation-delay:150ms]" />
+                <span className="h-2 w-2 animate-pulse rounded-full bg-moss [animation-delay:300ms]" />
+              </span>
+            </div>
+          </div>
+        )}
+        <div ref={bottom} />
       </div>
-      <form className="mt-6 rounded-2xl border border-dashed border-gold p-4" onSubmit={(e) => { e.preventDefault(); send(tx('Formulir hari baik', 'Good-day form'), { intent: 'hari_baik', activity: form.activity, date_from: form.from, date_to: form.to }) }}>
-        <h3 className="font-display text-xl">{tx('Jika model tidak membaca tanggal', 'If the model cannot read the date')}</h3>
-        <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          <select className="tap rounded-xl border border-line bg-card px-2" value={form.activity} onChange={(e) => setForm({ ...form, activity: e.target.value })}>
-            <option value="buka_usaha">{tx('Buka usaha', 'Open a business')}</option>
-            <option value="pindah_rumah">{tx('Pindah rumah', 'Move house')}</option>
-            <option value="nikah">{tx('Nikah', 'Get married')}</option>
-            <option value="potong_gigi">{tx('Potong gigi', 'Tooth filing')}</option>
-            <option value="potong_rambut">{tx('Potong rambut', 'Hair cutting')}</option>
-            <option value="membangun">{tx('Membangun', 'Build a house')}</option>
-            <option value="ngaben">{tx('Ngaben', 'Ngaben')}</option>
-            <option value="menanam">{tx('Menanam', 'Planting')}</option>
-          </select>
-          <input className="tap rounded-xl border border-line px-2" type="date" required value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} />
-          <input className="tap rounded-xl border border-line px-2" type="date" required value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} />
-        </div>
-        <button className="tap mt-3 rounded-xl bg-moss px-4 text-paper" type="submit">{tx('Hitung mesin', 'Run the engine')}</button>
+
+      {error && <p className="mt-3 text-sm text-brick" role="alert">{error}</p>}
+
+      <form
+        className="mt-4 flex items-end gap-2"
+        onSubmit={(event) => {
+          event.preventDefault()
+          send(question)
+        }}
+      >
+        <textarea
+          className="tap min-h-11 max-h-32 min-w-0 flex-1 resize-none rounded-2xl border border-line bg-card px-3 py-2 text-base"
+          value={question}
+          rows={1}
+          maxLength={500}
+          placeholder={tx('Tulis pertanyaan', 'Write a question')}
+          onChange={(event) => setQuestion(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              send(question)
+            }
+          }}
+        />
+        <button className="tap rounded-2xl bg-ink px-4 text-paper" type="submit" disabled={busy || !question.trim()}>
+          {tx('Kirim', 'Send')}
+        </button>
       </form>
+
+      <details className="mt-4 rounded-2xl border border-dashed border-gold p-4">
+        <summary className="cursor-pointer font-display text-lg">{tx('Formulir rentang tanggal', 'Date-range form')}</summary>
+        <form className="mt-3" onSubmit={(event) => {
+          event.preventDefault()
+          send(tx('Formulir hari baik', 'Good-day form'), { intent: 'hari_baik', activity: form.activity, date_from: form.from, date_to: form.to })
+        }}>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <select className="tap rounded-xl border border-line bg-card px-2" value={form.activity} onChange={(event) => setForm({ ...form, activity: event.target.value })}>
+              <option value="buka_usaha">{tx('Buka usaha', 'Open a business')}</option>
+              <option value="pindah_rumah">{tx('Pindah rumah', 'Move house')}</option>
+              <option value="nikah">{tx('Nikah', 'Get married')}</option>
+              <option value="potong_gigi">{tx('Potong gigi', 'Tooth filing')}</option>
+              <option value="potong_rambut">{tx('Potong rambut', 'Hair cutting')}</option>
+              <option value="membangun">{tx('Membangun', 'Build a house')}</option>
+              <option value="ngaben">{tx('Ngaben', 'Ngaben')}</option>
+              <option value="menanam">{tx('Menanam', 'Planting')}</option>
+            </select>
+            <input className="tap rounded-xl border border-line px-2" type="date" required value={form.from} onChange={(event) => setForm({ ...form, from: event.target.value })} />
+            <input className="tap rounded-xl border border-line px-2" type="date" required value={form.to} onChange={(event) => setForm({ ...form, to: event.target.value })} />
+          </div>
+          <button className="tap mt-3 rounded-xl bg-moss px-4 text-paper" type="submit">{tx('Hitung', 'Calculate')}</button>
+        </form>
+      </details>
     </main>
+  )
+}
+
+function TurnView({ turn }: { turn: Turn }) {
+  const { lang, tx } = useLang()
+  if (turn.role === 'user') {
+    return (
+      <div className="flex justify-end">
+        <p className="max-w-[85%] rounded-2xl rounded-br-md bg-ink px-4 py-3 text-sm leading-relaxed text-paper">{turn.text}</p>
+      </div>
+    )
+  }
+  const recommended = (turn.data?.engine?.days ?? []).filter((day) => day.recommended).slice(0, 3)
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[92%] rounded-2xl rounded-bl-md border border-line bg-card px-4 py-3">
+        <p className="whitespace-pre-wrap text-sm leading-relaxed">{turn.text}</p>
+        {recommended.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {recommended.map((day) => (
+              <span key={day.date} className="rounded-full border border-line bg-paper px-3 py-1 text-xs">
+                {formatDate(day.date, lang)} · {day.saptawara} {day.pancawara}
+              </span>
+            ))}
+          </div>
+        )}
+        {recommended.length > 0 && (
+          <details className="mt-2">
+            <summary className="cursor-pointer text-xs font-semibold text-moss">{tx('Lihat detail', 'See detail')}</summary>
+            <div className="mt-2 space-y-2">
+              {recommended.map((day) => (
+                <div key={day.date} className="rounded-xl bg-paper px-3 py-2 text-xs leading-relaxed">
+                  <p className="font-semibold">{formatDate(day.date, lang)} · {day.saptawara} {day.pancawara} · {tx('wuku', 'wuku')} {day.wuku}</p>
+                  <p>{day.triwara}{day.sasih ? ` · sasih ${day.sasih}` : ''}{day.penanggal_pangelong ? ` · ${day.penanggal_pangelong}` : ''}</p>
+                  {holyNames(day) && <p>{holyNames(day)}</p>}
+                  {day.rules.filter((rule) => rule.effect === 'good').length > 0 && (
+                    <p>{day.rules.filter((rule) => rule.effect === 'good').map((rule) => rule.name).join(', ')}</p>
+                  )}
+                  <Link className="mt-1 inline-block underline" to={`/kalender/${day.date}`}>{tx('Buka di kalender', 'Open in the calendar')}</Link>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+        {turn.data?.disclaimer && <p className="mt-3 text-xs leading-relaxed text-moss">{turn.data.disclaimer}</p>}
+      </div>
+    </div>
   )
 }
