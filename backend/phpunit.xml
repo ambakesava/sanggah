@@ -39,6 +39,7 @@
         <env name="SCAN_RATE_PER_MINUTE" value="1000"/>
         <env name="SCAN_RATE_PER_DAY" value="1000"/>
         <env name="ASK_RATE_PER_MINUTE" value="1000"/>
+        <env name="KALENDERBALI_TIMEOUT" value="1"/>
         <env name="CACHE_STORE" value="array" force="true"/>
     </php>
 </phpunit>

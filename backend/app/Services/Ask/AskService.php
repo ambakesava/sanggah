@@ -14,6 +14,7 @@ use App\Services\Ai\OfflineIntentParser;
 use App\Services\Ai\PromptLibrary;
 use App\Services\Calendar\AnswerGuard;
 use App\Services\Calendar\CalendarEngine;
+use App\Services\Calendar\KalenderBaliClient;
 use App\Services\Calendar\RelativeDateResolver;
 use App\Services\Calendar\RuleEvaluator;
 use App\Support\ApiResponse;
@@ -31,7 +32,11 @@ final class AskService
         private readonly RuleEvaluator $rules,
         private readonly AnswerGuard $guard,
         private readonly PromptLibrary $prompts,
+        private readonly KalenderBaliClient $kalenderBali,
     ) {}
+
+    /** @var array<string, list<array{date: string, name: string, url: string}>> */
+    private array $remoteByDate = [];
 
     /**
      * @param  array<string, mixed>  $input
@@ -103,6 +108,7 @@ final class AskService
                     ])->all(),
                 ])->all();
             $described['recommended'] = $this->recommended($matched, $intent);
+            $described['kalenderbali'] = $this->remoteByDate[$iso] ?? [];
             $engineDays[] = $described;
         }
 
@@ -225,6 +231,7 @@ final class AskService
                 'recommended' => (bool) ($day['recommended'] ?? false),
                 'rules' => $day['rules'],
                 'ceremonies' => $day['ceremonies'],
+                'kalenderbali' => $day['kalenderbali'] ?? [],
             ], $days),
         ];
         $system = $this->prompts->get('calendar');
@@ -336,7 +343,10 @@ final class AskService
     private function targetDays(array $intent, DateTimeImmutable $today, string $lang): array
     {
         if ($intent['intent'] === 'rerahinan_berikutnya' && ! empty($intent['year'])) {
-            $found = $this->findInYear($intent['rerahinan'] ?? null, (int) $intent['year']);
+            $remote = $this->rememberRemote($intent['rerahinan'] ?? '', (int) $intent['year']);
+            $found = $remote !== []
+                ? array_values(array_unique(array_column($remote, 'date')))
+                : $this->findInYear($intent['rerahinan'] ?? null, (int) $intent['year']);
             if ($found === []) {
                 throw new ApiProblem(
                     'NOT_FOUND',
@@ -353,6 +363,29 @@ final class AskService
         $span = $this->span($intent, $today, $lang);
 
         return $this->daysBetween($span['from'], $span['to']);
+    }
+
+    /**
+     * @return list<string>
+     */
+    /**
+     * @return list<array{date: string, name: string, url: string}>
+     */
+    private function rememberRemote(string $code, int $year): array
+    {
+        if ($code === '') {
+            return [];
+        }
+        try {
+            $events = $this->kalenderBali->matching($code, $year);
+        } catch (Throwable) {
+            return [];
+        }
+        foreach ($events as $event) {
+            $this->remoteByDate[$event['date']][] = $event;
+        }
+
+        return $events;
     }
 
     /**
@@ -589,6 +622,10 @@ final class AskService
                         .$source['title']
                         .($source['url'] ? ' '.$source['url'] : '');
                 }
+            }
+            foreach ($day['kalenderbali'] ?? [] as $event) {
+                $lines[] = ($lang === 'en' ? '  kalenderbali.org: ' : '  kalenderbali.org: ')
+                    .$event['name'].' '.$event['url'];
             }
             foreach ($day['rules'] as $rule) {
                 $lines[] = '  '.($lang === 'en' ? 'Rule' : 'Aturan').': '.$rule['name'].' ['.$rule['effect'].']';

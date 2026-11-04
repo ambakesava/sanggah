@@ -143,7 +143,7 @@ Ini kata sandi demo lokal, bukan rahasia produksi. Ganti sebelum penyebaran publ
 
 - Belum ada URL penyebaran. Set foto uji vision dan angka akurasinya belum diukur. Jangan menganggap keyakinan model sebagai probabilitas terkalibrasi.
 - Retrieval adalah pencocokan leksikal, bukan basis vektor. `vector_id` kosong. Endpoint ingest admin hanya menandai chunk sebagai `lexical-v1`.
-- Tabel sasih dan upacara mencakup 2026. Tanggal 2027 tidak diisi sebelum ada surat resmi.
+- Daftar rerainan dicoba diambil langsung dari halaman `rerainan.php` di kalenderbali.org (situs itu tidak menyediakan API JSON). Cloudflare sering menolak permintaan dari server; kalau itu terjadi, tanggal pawukon dan surat Bimas Hindu tetap dipakai.
 - Siwa Ratri pada surat Bimas Hindu jatuh 17 Januari 2026. kalenderbali.org menaruh Tilem Kepitu pada 18 Januari 2026. Keduanya dicatat, tidak digabung diam-diam.
 - Aturan dewasa ayu hanya subset kecil yang bersumber (Ayu Nulus dan Sri Tumpuk untuk buka usaha; Amerta Bumi, Kamajaya, dan Derman Bagia untuk nikah; Ala Dahat; larangan kerja pada Nyepi). Bukan sistem wariga lengkap dan bukan keputusan.
 - Etiquette Check (foto pakaian) di luar cakupan. Riwayat pindai pengguna dan draf tips AI untuk admin belum dibuat sebagai alur penuh. Umpan balik dan unduhan `.ics` sudah ada.

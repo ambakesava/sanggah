@@ -43,6 +43,11 @@ return [
 
     'cors_origins' => $origins,
 
+    'kalenderbali' => [
+        'base_url' => rtrim((string) env('KALENDERBALI_BASE_URL', 'https://kalenderbali.org'), '/'),
+        'timeout' => (int) env('KALENDERBALI_TIMEOUT', 8),
+    ],
+
     'ai' => [
         'provider' => env('AI_PROVIDER', 'gemini'),
         'timeout' => (int) env('AI_TIMEOUT_S', 20),

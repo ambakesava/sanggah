@@ -6,6 +6,8 @@ use App\Models\Source;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class ApiSmokeTest extends TestCase
@@ -100,6 +102,20 @@ class ApiSmokeTest extends TestCase
         $this->assertContains('galungan', $galungan->json('engine.days.0.rerahinan'));
         $this->assertCount(1, $galungan->json('engine.days'));
         $this->assertStringContainsString('bimashindu.kemenag.go.id', json_encode($galungan->json('engine.days.0.ceremonies')));
+
+        Cache::flush();
+        Http::fake([
+            'https://kalenderbali.org/*' => Http::response(<<<'HTML'
+                <ul><li>17 Juni 2026. Hari Raya Galungan. Dari situs.</li></ul>
+            HTML, 200),
+        ]);
+        $live = $this->postJson('/api/ask', [
+            'question' => 'galungan 2026 kapan',
+            'lang' => 'id',
+        ])->assertOk();
+        $live->assertJsonPath('engine.days.0.date', '2026-06-17');
+        $live->assertJsonPath('engine.days.0.kalenderbali.0.name', 'Hari Raya Galungan');
+        $this->assertStringContainsString('kalenderbali.org/rerainan.php', $live->json('engine.days.0.kalenderbali.0.url'));
     }
 
     public function test_scan_filename_hint_explain_and_rejection(): void
