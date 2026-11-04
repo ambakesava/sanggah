@@ -20,7 +20,7 @@ Wisatawan dan generasi muda Bali sering tidak tahu nama objek yang dilihat, atur
 - Frontend: React, Vite, TypeScript, Tailwind CSS. Direktori `frontend/`.
 - Backend: Laravel 12, PHP 8.3+ (kompatibel dengan 8.5), Laravel Sanctum. Direktori `backend/`.
 - Basis data: SQLite untuk pengembangan dan uji. MySQL untuk penyebaran bila diinginkan.
-- AI: Gemini (`gemini-2.5-flash-lite`, dapat diganti) dan Qwen di Alibaba Model Studio internasional/Singapura (`qwen3-vl-flash`, endpoint OpenAI-compatible). Keduanya lewat `AiService`.
+- AI: Gemini (`gemini-3.5-flash-lite`, dapat diganti) dan Qwen di Alibaba Cloud Model Studio internasional/Singapura (`qwen3-vl-flash`, endpoint OpenAI-compatible). Keduanya lewat `AiService`.
 
 ## AI Implementation
 
@@ -178,7 +178,7 @@ Pembagian peran rinci belum dicatat di luar catatan PRD bahwa Kailash mengerjaka
 | Backend / runtime | Laravel 12, PHP 8.3+ |
 | Basis data | SQLite (lokal dan uji), MySQL (siap dipakai) |
 | Hosting | Belum. Rencana: API di Railway atau Render, UI di Vercel. |
-| Model AI | Gemini `gemini-2.5-flash-lite` dan Qwen `qwen3-vl-flash` (dapat diganti lewat env). Mock lokal bila kunci kosong. |
+| Model AI | Gemini `gemini-3.5-flash-lite` dan Qwen `qwen3-vl-flash` (dapat diganti lewat env). Mock lokal bila kunci kosong. |
 | Peran AI | Klasifikasi foto dan uraian maksud bahasa. Bukan penghitung tanggal. |
 | Dataset | Kartu dan chunk yang ditulis tim dari sumber pada bagian kredit. Bukan hasil latih ulang model. |
 | Pustaka | Laravel, Sanctum, React, Vite, Tailwind, PHPUnit, Guzzle (lewat Laravel HTTP). |

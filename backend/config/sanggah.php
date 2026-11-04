@@ -53,8 +53,8 @@ return [
         'gemini' => [
             'key' => env('GEMINI_API_KEY', ''),
             'base' => rtrim((string) env('GEMINI_BASE_URL', 'https://generativelanguage.googleapis.com/v1beta'), '/'),
-            'text_model' => env('GEMINI_TEXT_MODEL', 'gemini-2.5-flash-lite'),
-            'vision_model' => env('GEMINI_VISION_MODEL', 'gemini-2.5-flash-lite'),
+            'text_model' => env('GEMINI_TEXT_MODEL', 'gemini-3.5-flash-lite'),
+            'vision_model' => env('GEMINI_VISION_MODEL', 'gemini-3.5-flash-lite'),
         ],
         'qwen' => [
             'key' => env('QWEN_API_KEY', ''),
