@@ -19,6 +19,9 @@ class AskController extends Controller
         $lang = Locale::fromRequest($request);
         $data = $request->validate([
             'question' => ['required_without:intent_override', 'nullable', 'string', 'max:500'],
+            'history' => ['sometimes', 'array', 'max:8'],
+            'history.*.role' => ['required', 'string', 'in:user,assistant'],
+            'history.*.content' => ['required', 'string', 'max:2000'],
             'intent_override' => ['sometimes', 'array'],
             'intent_override.intent' => ['sometimes', 'string'],
             'intent_override.activity' => ['nullable', 'string'],

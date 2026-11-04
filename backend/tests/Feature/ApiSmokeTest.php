@@ -91,7 +91,8 @@ class ApiSmokeTest extends TestCase
         $nikah->assertJsonPath('intent.activity', 'nikah');
         $nikah->assertJsonPath('engine.days.0.recommended', true);
         $this->assertGreaterThan('2026-11-05', $nikah->json('engine.days.0.date'));
-        $this->assertStringContainsString($nikah->json('engine.days.0.date'), $nikah->json('answer'));
+        $dayNumber = (int) substr((string) $nikah->json('engine.days.0.date'), 8, 2);
+        $this->assertStringContainsString($dayNumber.' November 2026', $nikah->json('answer'));
 
         $galungan = $this->postJson('/api/ask', [
             'question' => 'galungan 2026 kapan',
@@ -134,7 +135,9 @@ class ApiSmokeTest extends TestCase
         $this->assertStringContainsString('pemangku', strtolower($answer));
         $near->assertJsonPath('engine.days.0.recommended', true);
         $near->assertJsonPath('engine.days.0.date', '2026-11-24');
-        $this->assertStringContainsString('2026-11-24', $answer);
+        $this->assertStringContainsString('24 November 2026', $answer);
+        $this->assertStringNotContainsString('validated subset', strtolower($answer));
+        $this->assertStringNotContainsString('not a decision', strtolower($answer));
 
         $week = $this->postJson('/api/ask', [
             'question' => 'hari baik untuk ngaben minggu depan',
@@ -150,6 +153,58 @@ class ApiSmokeTest extends TestCase
         $this->assertFalse(collect($week->json('engine.days'))->contains(
             fn (array $day) => ($day['recommended'] ?? false) === true
         ));
+    }
+
+    public function test_ngaben_phrasing_variants_share_one_search(): void
+    {
+        $this->travelTo('2026-11-05 02:00:00');
+        foreach ([
+            'kapan hari baik untuk ngaben',
+            'hari baik untuk ngaben terdekat',
+            'hari baik ngaben paling dekat',
+            'hari baik untuk ngaben',
+        ] as $question) {
+            $response = $this->postJson('/api/ask', [
+                'question' => $question,
+                'lang' => 'en',
+            ])->assertOk();
+            $response->assertJsonPath('intent.intent', 'hari_baik');
+            $response->assertJsonPath('intent.activity', 'ngaben');
+            $response->assertJsonPath('reply_lang', 'id');
+            $response->assertJsonPath('engine.days.0.date', '2026-11-24');
+            $response->assertJsonPath('engine.days.0.recommended', true);
+            $answer = (string) $response->json('answer');
+            $this->assertStringContainsString('24 November 2026', $answer);
+            $this->assertStringContainsString('Om Swastiastu', $answer);
+            $this->assertStringContainsString('pemangku', mb_strtolower($answer));
+            $this->assertStringNotContainsString('validated subset', strtolower($answer));
+            $this->assertStringNotContainsString('in the range', strtolower($answer));
+            $this->assertStringNotContainsString('not a decision', strtolower($answer));
+            $this->assertStringNotContainsString('The nearest', $answer);
+        }
+
+        $first = $this->postJson('/api/ask', [
+            'question' => 'kapan hari baik untuk nikah',
+            'lang' => 'en',
+        ])->assertOk();
+        $first->assertJsonPath('reply_lang', 'id');
+        $firstDate = (string) $first->json('engine.days.0.date');
+        $this->assertTrue($first->json('engine.days.0.recommended'));
+
+        $more = $this->postJson('/api/ask', [
+            'question' => 'ada pilihan lain?',
+            'lang' => 'en',
+            'history' => [
+                ['role' => 'user', 'content' => 'kapan hari baik untuk nikah'],
+                ['role' => 'assistant', 'content' => $first->json('answer')],
+            ],
+        ])->assertOk();
+        $more->assertJsonPath('intent.activity', 'nikah');
+        $more->assertJsonPath('reply_lang', 'id');
+        $this->assertStringNotContainsString('Om Swastiastu', (string) $more->json('answer'));
+        $dates = array_column($more->json('engine.days'), 'date');
+        $this->assertNotContains($firstDate, $dates);
+        $this->assertGreaterThan($firstDate, $dates[0]);
     }
 
     public function test_potong_gigi_returns_a_validated_day(): void

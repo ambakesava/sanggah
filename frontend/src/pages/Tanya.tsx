@@ -24,6 +24,8 @@ type AskResponse = {
   answer_mode: string
   needs_form: boolean
   disclaimer: string
+  followups?: string[]
+  reply_lang?: Lang
 }
 type Turn = { role: 'user' | 'assistant'; text: string; data?: AskResponse }
 
@@ -58,16 +60,17 @@ export default function Tanya() {
   const [turns, setTurns] = useState<Turn[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [form, setForm] = useState({ activity: 'buka_usaha', from: '', to: '' })
   const bottom = useRef<HTMLDivElement>(null)
+  const lastAssistant = turns.reduce((found, turn, index) => (turn.role === 'assistant' ? index : found), -1)
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [turns, busy])
 
-  async function send(text: string, override?: Record<string, unknown>) {
+  async function send(text: string) {
     const trimmed = text.trim()
     if (!trimmed || busy) return
+    const history = turns.slice(-6).map((turn) => ({ role: turn.role, content: turn.text }))
     setQuestion('')
     setBusy(true)
     setError('')
@@ -75,7 +78,7 @@ export default function Tanya() {
     try {
       const data = await api<AskResponse>('/api/ask', {
         method: 'POST',
-        body: JSON.stringify({ question: trimmed, lang, intent_override: override }),
+        body: JSON.stringify({ question: trimmed, lang, history }),
       })
       setTurns((prev) => [...prev, { role: 'assistant', text: data.answer, data }])
     } catch (err) {
@@ -94,20 +97,22 @@ export default function Tanya() {
           'Ask in everyday language. The dates come from wuku and sasih, then get explained like a chat.',
         )}
       </p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {chips.map(([id, en]) => (
-          <button key={id} type="button" className="rounded-full border border-line bg-card px-3 py-2 text-left text-sm" onClick={() => send(tx(id, en))}>
-            {tx(id, en)}
-          </button>
-        ))}
-      </div>
+      {turns.length === 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {chips.map(([id, en]) => (
+            <button key={id} type="button" className="rounded-full border border-line bg-card px-3 py-2 text-left text-sm" onClick={() => send(tx(id, en))}>
+              {tx(id, en)}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="mt-4 flex flex-1 flex-col gap-3" aria-live="polite">
         {turns.length === 0 && (
           <p className="text-sm text-moss">{tx('Pilih pertanyaan di atas, atau tulis sendiri di bawah.', 'Pick a question above, or write your own below.')}</p>
         )}
         {turns.map((turn, index) => (
-          <TurnView key={index} turn={turn} />
+          <TurnView key={index} turn={turn} onFollowup={index === lastAssistant ? send : undefined} />
         ))}
         {busy && (
           <div className="flex justify-start">
@@ -150,36 +155,16 @@ export default function Tanya() {
           {tx('Kirim', 'Send')}
         </button>
       </form>
-
-      <details className="mt-4 rounded-2xl border border-dashed border-gold p-4">
-        <summary className="cursor-pointer font-display text-lg">{tx('Formulir rentang tanggal', 'Date-range form')}</summary>
-        <form className="mt-3" onSubmit={(event) => {
-          event.preventDefault()
-          send(tx('Formulir hari baik', 'Good-day form'), { intent: 'hari_baik', activity: form.activity, date_from: form.from, date_to: form.to })
-        }}>
-          <div className="grid gap-2 sm:grid-cols-3">
-            <select className="tap rounded-xl border border-line bg-card px-2" value={form.activity} onChange={(event) => setForm({ ...form, activity: event.target.value })}>
-              <option value="buka_usaha">{tx('Buka usaha', 'Open a business')}</option>
-              <option value="pindah_rumah">{tx('Pindah rumah', 'Move house')}</option>
-              <option value="nikah">{tx('Nikah', 'Get married')}</option>
-              <option value="potong_gigi">{tx('Potong gigi', 'Tooth filing')}</option>
-              <option value="potong_rambut">{tx('Potong rambut', 'Hair cutting')}</option>
-              <option value="membangun">{tx('Membangun', 'Build a house')}</option>
-              <option value="ngaben">{tx('Ngaben', 'Ngaben')}</option>
-              <option value="menanam">{tx('Menanam', 'Planting')}</option>
-            </select>
-            <input className="tap rounded-xl border border-line px-2" type="date" required value={form.from} onChange={(event) => setForm({ ...form, from: event.target.value })} />
-            <input className="tap rounded-xl border border-line px-2" type="date" required value={form.to} onChange={(event) => setForm({ ...form, to: event.target.value })} />
-          </div>
-          <button className="tap mt-3 rounded-xl bg-moss px-4 text-paper" type="submit">{tx('Hitung', 'Calculate')}</button>
-        </form>
-      </details>
+      <p className="mt-6 text-xs leading-relaxed text-moss">
+        {tx('Praktik bisa beda tiap desa. Ini pendamping, bukan keputusan adat.', 'Practice can differ by village. This is a companion, not a customary ruling.')}
+      </p>
     </main>
   )
 }
 
-function TurnView({ turn }: { turn: Turn }) {
+function TurnView({ turn, onFollowup }: { turn: Turn; onFollowup?: (text: string) => void }) {
   const { lang, tx } = useLang()
+  const chipLang = turn.data?.reply_lang || lang
   if (turn.role === 'user') {
     return (
       <div className="flex justify-end">
@@ -196,7 +181,7 @@ function TurnView({ turn }: { turn: Turn }) {
           <div className="mt-3 flex flex-wrap gap-2">
             {recommended.map((day) => (
               <span key={day.date} className="rounded-full border border-line bg-paper px-3 py-1 text-xs">
-                {formatDate(day.date, lang)} · {day.saptawara} {day.pancawara}
+                {formatDate(day.date, chipLang)} · {day.saptawara} {day.pancawara}
               </span>
             ))}
           </div>
@@ -207,7 +192,7 @@ function TurnView({ turn }: { turn: Turn }) {
             <div className="mt-2 space-y-2">
               {recommended.map((day) => (
                 <div key={day.date} className="rounded-xl bg-paper px-3 py-2 text-xs leading-relaxed">
-                  <p className="font-semibold">{formatDate(day.date, lang)} · {day.saptawara} {day.pancawara} · {tx('wuku', 'wuku')} {day.wuku}</p>
+                  <p className="font-semibold">{formatDate(day.date, chipLang)} · {day.saptawara} {day.pancawara} · {tx('wuku', 'wuku')} {day.wuku}</p>
                   <p>{day.triwara}{day.sasih ? ` · sasih ${day.sasih}` : ''}{day.penanggal_pangelong ? ` · ${day.penanggal_pangelong}` : ''}</p>
                   {holyNames(day) && <p>{holyNames(day)}</p>}
                   {day.rules.filter((rule) => rule.effect === 'good').length > 0 && (
@@ -219,7 +204,15 @@ function TurnView({ turn }: { turn: Turn }) {
             </div>
           </details>
         )}
-        {turn.data?.disclaimer && <p className="mt-3 text-xs leading-relaxed text-moss">{turn.data.disclaimer}</p>}
+        {onFollowup && (turn.data?.followups?.length ?? 0) > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {turn.data?.followups?.map((chip) => (
+              <button key={chip} type="button" className="rounded-full border border-line bg-paper px-3 py-1 text-left text-xs" onClick={() => onFollowup(chip)}>
+                {chip}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

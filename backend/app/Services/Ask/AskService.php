@@ -46,33 +46,42 @@ final class AskService
     {
         $zone = new DateTimeZone(CalendarEngine::TIMEZONE);
         $today = Carbon::now($zone)->toDateTimeImmutable()->setTime(0, 0);
-        $intent = $this->intent($input, $lang, $today);
+        $history = $this->historyFrom($input);
+        $question = (string) ($input['question'] ?? '');
+        $lang = $this->detectLang($question, $history, $lang);
+        $intent = $this->applyConversation($this->intent($input, $lang, $today), $question, $history, $today);
+        $intent['greet'] = ! $this->historyHasAssistant($history);
         $disclaimer = (string) config('sanggah.disclaimer.calendar.'.$lang);
 
+        if (($intent['intent'] ?? null) === 'explain_rule') {
+            $answer = $this->finishAnswer($this->ruleAnswer($intent, $lang), $intent, $lang, false);
+
+            return $this->envelope($intent, null, $answer, 'template', false, $disclaimer, $this->followups($intent, [], $lang), $lang);
+        }
+
+        if ($intent['intent'] === 'hari_baik' && ! is_string($intent['activity'] ?? null)) {
+            $answer = $this->finishAnswer($this->clarifyAnswer($lang), $intent, $lang, false);
+
+            return $this->envelope($intent, null, $answer, 'template', false, $disclaimer, $this->followups($intent, [], $lang), $lang);
+        }
+
         if ($intent['intent'] === 'out_of_scope') {
-            return [
-                'intent' => $intent,
-                'engine' => null,
-                'answer' => $lang === 'en'
-                    ? 'Sanggah answers questions about the Balinese calendar and holy days. Try: "Is there a ceremony on 17 June 2026?" or "A good day to open a shop next week?"'
-                    : 'Sanggah menjawab pertanyaan tentang kalender Bali dan hari raya. Contoh: "Upacara apa tanggal 17 Juni 2026?" atau "Hari baik buka usaha minggu depan?"',
-                'answer_mode' => 'template',
-                'needs_form' => false,
-                'disclaimer' => $disclaimer,
-            ];
+            $answer = $this->finishAnswer(
+                $lang === 'en'
+                    ? 'I can help with the Balinese calendar and choosing a day for a ceremony. Try asking when a good day for a wedding is.'
+                    : 'Aku bantu soal kalender Bali dan hari baik upacara. Coba tanya, misalnya, kapan hari baik untuk nikah.',
+                $intent,
+                $lang,
+                false
+            );
+
+            return $this->envelope($intent, null, $answer, 'template', false, $disclaimer, [], $lang);
         }
 
         if ($intent['intent'] === 'needs_form') {
-            return [
-                'intent' => $intent,
-                'engine' => null,
-                'answer' => $lang === 'en'
-                    ? 'The question could not be read as a date. Use the form: pick an activity and a date range of at most 62 days.'
-                    : 'Pertanyaan belum terbaca sebagai tanggal. Gunakan formulir: pilih kegiatan dan rentang tanggal paling lama 62 hari.',
-                'answer_mode' => 'template',
-                'needs_form' => true,
-                'disclaimer' => $disclaimer,
-            ];
+            $answer = $this->finishAnswer($this->clarifyAnswer($lang), $intent, $lang, false);
+
+            return $this->envelope($intent, null, $answer, 'template', true, $disclaimer, $this->followups($intent, [], $lang), $lang);
         }
 
         $days = $this->targetDays($intent, $today, $lang);
@@ -120,25 +129,15 @@ final class AskService
         $answer = $template;
         $mode = 'template';
         if ($this->ai->providerName() !== 'mock') {
-            $prose = $this->explainWithModel((string) ($input['question'] ?? ''), $intent, $engineDays, $today, $lang);
+            $prose = $this->explainWithModel($question, $intent, $engineDays, $today, $lang, $history);
             if ($prose !== null) {
                 $answer = $prose;
                 $mode = 'llm';
             }
         }
-        $answer = trim(str_replace($disclaimer, '', $answer));
+        $answer = $this->finishAnswer(trim(str_replace($disclaimer, '', $answer)), $intent, $lang, true);
 
-        return [
-            'intent' => $intent,
-            'engine' => [
-                'days' => $engineDays,
-                'rules_version' => (string) config('sanggah.rules_version'),
-            ],
-            'answer' => $answer,
-            'answer_mode' => $mode,
-            'needs_form' => false,
-            'disclaimer' => $disclaimer,
-        ];
+        return $this->envelope($intent, $engineDays, $answer, $mode, false, $disclaimer, $this->followups($intent, $engineDays, $lang), $lang);
     }
 
     /**
@@ -189,7 +188,21 @@ final class AskService
      */
     private function mergeIntent(array $parsed, array $keyword): array
     {
-        if (in_array($parsed['intent'], ['out_of_scope', 'needs_form'], true) && ! in_array($keyword['intent'], ['out_of_scope', 'needs_form'], true)) {
+        if ($keyword['intent'] === 'hari_baik') {
+            $parsed['intent'] = 'hari_baik';
+            if (is_string($keyword['activity'])) {
+                $parsed['activity'] = $keyword['activity'];
+            }
+            if ($keyword['date_iso'] === null) {
+                $parsed['date_iso'] = null;
+            }
+            if ($keyword['date_from'] === null) {
+                $parsed['date_from'] = null;
+                $parsed['date_to'] = null;
+            }
+            $parsed['relative_expr'] = $this->knownRelative($keyword['relative_expr'] ?? null)
+                ?? $this->knownRelative($parsed['relative_expr'] ?? null);
+        } elseif (in_array($parsed['intent'], ['out_of_scope', 'needs_form'], true) && ! in_array($keyword['intent'], ['out_of_scope', 'needs_form'], true)) {
             return $keyword;
         }
         if ($parsed['activity'] === null && is_string($keyword['activity'])) {
@@ -208,6 +221,17 @@ final class AskService
         return $parsed;
     }
 
+    private function knownRelative(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+        $value = mb_strtolower(trim($value));
+        $known = ['terdekat', 'minggu depan', 'next week', 'minggu ini', 'this week', 'bulan depan', 'next month', 'besok', 'tomorrow', 'lusa', 'hari ini', 'today'];
+
+        return in_array($value, $known, true) ? $value : null;
+    }
+
     /**
      * @param  array<string, mixed>  $raw
      * @return array<string, mixed>
@@ -216,10 +240,13 @@ final class AskService
      * @param  array<string, mixed>  $intent
      * @param  list<array<string, mixed>>  $days
      */
-    private function explainWithModel(string $question, array $intent, array $days, DateTimeImmutable $today, string $lang): ?string
+    private function explainWithModel(string $question, array $intent, array $days, DateTimeImmutable $today, string $lang, array $history): ?string
     {
         $context = [
             'question' => $question,
+            'reply_lang' => $lang,
+            'greet' => (bool) ($intent['greet'] ?? false),
+            'history' => $history,
             'today' => $today->format('Y-m-d'),
             'activity' => $intent['activity'] ?? null,
             'days' => array_map(fn (array $day) => [
@@ -269,6 +296,9 @@ final class AskService
             return null;
         }
         $text = $this->humanizeCodes($this->guard->stripUnknownDates($text, $days), $lang);
+        if ($this->soundsRobotic($text)) {
+            return null;
+        }
 
         return $this->guard->accepts($text, $days) ? $text : null;
     }
@@ -363,7 +393,7 @@ final class AskService
      * @param  array<string, mixed>  $intent
      * @return list<DateTimeImmutable>
      */
-    private function targetDays(array $intent, DateTimeImmutable $today, string $lang): array
+    private function targetDays(array &$intent, DateTimeImmutable $today, string $lang): array
     {
         if ($this->searchesActivityWindow($intent)) {
             $dates = $this->activityDates($intent, $today);
@@ -557,11 +587,17 @@ final class AskService
      * @param  array<string, mixed>  $intent
      * @return list<string>
      */
-    private function activityDates(array $intent, DateTimeImmutable $today): array
+    private function activityDates(array &$intent, DateTimeImmutable $today): array
     {
         $found = $this->findRecommendedDates($intent, $today, 180, 3);
         if ($found !== []) {
             return $found;
+        }
+        $excluded = array_values(array_filter((array) ($intent['exclude_dates'] ?? []), is_string(...)));
+        if (($intent['follow_up'] ?? null) === 'more' && $excluded !== []) {
+            $intent['only_option'] = true;
+
+            return array_slice($excluded, 0, 1);
         }
 
         return $this->findNotableDates($today, 90, 3);
@@ -577,25 +613,36 @@ final class AskService
             return [];
         }
         $ruleRows = CalendarRule::query()->where('status', 'validated')->get()->map->toEngineArray()->all();
-        $seek = function (int $direction) use ($intent, $today, $ruleRows, $limit, $max): array {
+        $skip = array_fill_keys(array_filter((array) ($intent['exclude_dates'] ?? []), is_string(...)), true);
+        $seek = function (int $direction) use ($intent, $today, $ruleRows, $limit, $max, $skip): array {
             $found = [];
             for ($i = 1; $i <= $limit && count($found) < $max; $i++) {
                 $day = $today->modify(($direction > 0 ? '+' : '-').$i.' day');
-                $described = $this->engine->describe($day, SasihDay::payloadFor($day->format('Y-m-d')));
+                $iso = $day->format('Y-m-d');
+                if (isset($skip[$iso])) {
+                    continue;
+                }
+                $described = $this->engine->describe($day, SasihDay::payloadFor($iso));
                 if ($described['phase'] === null) {
                     continue;
                 }
                 $matched = $this->rules->match($described, $ruleRows, $intent['activity']);
                 if ($this->recommended($matched, $intent)) {
-                    $found[] = $day->format('Y-m-d');
+                    $found[] = $iso;
                 }
             }
 
             return $found;
         };
         $future = $seek(1);
+        if ($future !== []) {
+            return $future;
+        }
+        if (($intent['follow_up'] ?? null) === 'more') {
+            return [];
+        }
 
-        return $future !== [] ? $future : $seek(-1);
+        return $seek(-1);
     }
 
     /**
@@ -706,72 +753,93 @@ final class AskService
     {
         $recommended = array_values(array_filter($days, fn (array $day) => ! empty($day['recommended'])));
         $activity = $this->activityLabel(is_string($intent['activity'] ?? null) ? $intent['activity'] : null, $lang);
-        $ask = $lang === 'en'
-            ? 'This is not a decision. Please ask a pemangku or sulinggih.'
-            : 'Ini bukan keputusan. Tanyakan juga ke pemangku atau sulinggih.';
+        $prefix = $this->greetPrefix($intent);
+
+        if ($intent['intent'] === 'hari_baik' && $recommended !== [] && ($intent['follow_up'] ?? null) === 'why') {
+            $day = $recommended[0];
+
+            return $prefix.$this->whySentence($day, $activity, $lang);
+        }
+
+        if ($intent['intent'] === 'hari_baik' && ! empty($intent['only_option']) && $recommended !== []) {
+            $day = $recommended[0];
+            $when = $this->dayPhrase($day, $lang);
+            if ($lang === 'en') {
+                return $prefix."For {$activity}, the closest day is still {$when}. I don't see another one in the next few months. Which month are you planning? I'll look for one that fits.";
+            }
+
+            return $prefix."Untuk {$activity}, yang paling dekat tetap {$when}. Beberapa bulan ke depan belum ada hari lain yang pas. Rencananya bulan apa? Biar aku cariin yang pas.";
+        }
+
+        if ($intent['intent'] === 'hari_baik' && $recommended !== [] && ($intent['follow_up'] ?? null) === 'more') {
+            $bits = array_map(fn (array $day) => $this->dayPhrase($day, $lang), array_slice($recommended, 0, 2));
+            if ($lang === 'en') {
+                return $prefix.'There is another one: '.implode(', and ', $bits).'.';
+            }
+
+            return $prefix.'Ada. Berikutnya '.implode(', dan ', $bits).'.';
+        }
 
         if ($intent['intent'] === 'hari_baik' && $recommended !== []) {
             $first = $recommended[0];
-            $when = $this->humanDate((string) $first['date'], $lang).' ('.$first['date'].')';
-            $place = $first['saptawara'].' '.$first['pancawara'].', wuku '.$first['wuku'];
+            $when = $this->dayPhrase($first, $lang);
             $rules = $this->ruleNames($first, $lang);
             $passed = $first['date'] < $today->format('Y-m-d');
             if ($lang === 'en') {
                 $lead = $passed
-                    ? "The matching day for {$activity} in the curated table is {$when}, {$place}. That date has already passed."
-                    : "The nearest day for {$activity} is {$when}, {$place}.";
+                    ? "For {$activity}, a fitting day was {$when}. That day has already passed."
+                    : "For {$activity}, the nearest fitting day is {$when}.";
                 if ($rules !== '') {
-                    $lead .= " The published rule is {$rules}.";
+                    $lead .= " It falls under {$rules}, wuku {$first['wuku']}.";
                 }
 
-                return $lead.' '.$ask;
+                return $prefix.$lead;
             }
             $lead = $passed
-                ? "Di tabel yang ada, hari untuk {$activity} yang cocok adalah {$when}, {$place}. Tanggal itu sudah lewat."
-                : "Hari terdekat untuk {$activity} adalah {$when}, {$place}.";
+                ? "Untuk {$activity}, hari yang cocok jatuh pada {$when}. Hari itu sudah lewat."
+                : "Untuk {$activity}, hari yang cocok paling dekat itu {$when}.";
             if ($rules !== '') {
-                $lead .= " Aturannya {$rules}.";
+                $lead .= " Wukunya {$first['wuku']}, masuk {$rules}.";
             }
 
-            return $lead.' '.$ask;
+            return $prefix.$lead;
         }
 
         if ($intent['intent'] === 'hari_baik') {
             $notes = $this->notablePhrases($days, $lang);
             if ($lang === 'en') {
-                $lead = "In the range I checked, the validated subset does not mark a good day for {$activity}.";
+                $lead = "I don't see a fitting day for {$activity} just there.";
                 if ($notes !== '') {
-                    $lead .= " Nearby days worth knowing: {$notes}.";
+                    $lead .= " Close by there is {$notes}.";
                 }
+                $lead .= ' Which month are you planning?';
 
-                return $lead.' '.$ask;
+                return $prefix.$lead;
             }
-            $lead = "Di rentang yang saya cek, subset dewasa yang tervalidasi belum menandai hari baik untuk {$activity}.";
+            $lead = "Untuk {$activity}, di situ belum ada hari yang pas.";
             if ($notes !== '') {
-                $lead .= " Yang terdekat dan patut dicatat: {$notes}.";
+                $lead .= " Yang ada di dekatnya: {$notes}.";
             }
+            $lead .= ' Rencananya bulan apa? Biar aku cariin yang pas.';
 
-            return $lead.' '.$ask;
+            return $prefix.$lead;
         }
 
         $notes = $this->notablePhrases($days, $lang);
         if ($notes === '') {
             $only = $days[0] ?? null;
             if (is_array($only)) {
-                $when = $this->humanDate((string) $only['date'], $lang).' ('.$only['date'].')';
-                $place = $only['saptawara'].' '.$only['pancawara'].', wuku '.$only['wuku'];
+                $when = $this->humanDate((string) $only['date'], $lang);
 
-                return $lang === 'en'
-                    ? "On {$when} it is {$place}. {$ask}"
-                    : "Pada {$when} hari itu {$place}. {$ask}";
+                return $prefix.($lang === 'en'
+                    ? "On {$when} it is {$only['saptawara']} {$only['pancawara']}, wuku {$only['wuku']}."
+                    : "Pada {$when} hari itu {$only['saptawara']} {$only['pancawara']}, wuku {$only['wuku']}.");
             }
 
-            return $ask;
+            return $prefix.($lang === 'en' ? 'Tell me the day you have in mind.' : 'Sebut tanggalnya, ya, biar aku lihatkan.');
         }
 
-        return $lang === 'en'
-            ? "Here is what falls in that range: {$notes}. {$ask}"
-            : "Yang jatuh pada rentang itu: {$notes}. {$ask}";
+        return $prefix.($lang === 'en' ? "It falls on {$notes}." : "Jatuhnya {$notes}.");
     }
 
     /**
@@ -914,6 +982,487 @@ final class AskService
         }
 
         return $answer;
+    }
+
+    /**
+     * @param  array<string, mixed>  $input
+     * @return list<array{role: string, content: string}>
+     */
+    private function historyFrom(array $input): array
+    {
+        $rows = [];
+        foreach (array_slice((array) ($input['history'] ?? []), -6) as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $content = trim((string) ($row['content'] ?? ''));
+            if ($content === '') {
+                continue;
+            }
+            $rows[] = [
+                'role' => ($row['role'] ?? '') === 'assistant' ? 'assistant' : 'user',
+                'content' => mb_substr($content, 0, 2000),
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @param  list<array{role: string, content: string}>  $history
+     */
+    private function historyHasAssistant(array $history): bool
+    {
+        foreach ($history as $row) {
+            if ($row['role'] === 'assistant') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  list<array{role: string, content: string}>  $history
+     */
+    private function detectLang(string $question, array $history, string $fallback): string
+    {
+        $score = $this->langScore($question);
+        if ($score['id'] === 0 && $score['en'] === 0) {
+            for ($i = count($history) - 1; $i >= 0; $i--) {
+                if ($history[$i]['role'] !== 'user') {
+                    continue;
+                }
+                $score = $this->langScore($history[$i]['content']);
+                if ($score['id'] !== 0 || $score['en'] !== 0) {
+                    break;
+                }
+            }
+        }
+        if ($score['id'] === 0 && $score['en'] === 0) {
+            return $fallback === 'en' ? 'en' : 'id';
+        }
+
+        return $score['id'] >= $score['en'] ? 'id' : 'en';
+    }
+
+    /**
+     * @return array{id: int, en: int}
+     */
+    private function langScore(string $text): array
+    {
+        $lower = mb_strtolower($text);
+        $id = 0;
+        $en = 0;
+        foreach (['kapan', 'untuk', 'hari', 'baik', 'ngaben', 'nikah', 'gigi', 'kalau', 'ada', 'kenapa', 'pilihan', 'dekat', 'terdekat', 'minggu', 'bulan', 'yang', 'apa', 'bagaimana', 'mau', 'saya', 'aku', 'matur', 'semeton', 'rumah', 'usaha'] as $word) {
+            if (preg_match('/\b'.preg_quote($word, '/').'\b/u', $lower) === 1) {
+                $id++;
+            }
+        }
+        foreach (['when', 'what', 'good', 'day', 'why', 'other', 'next', 'please', 'wedding', 'marriage', 'where', 'how', 'week', 'month', 'ceremony'] as $word) {
+            if (preg_match('/\b'.preg_quote($word, '/').'\b/u', $lower) === 1) {
+                $en++;
+            }
+        }
+
+        return ['id' => $id, 'en' => $en];
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     * @param  list<array{role: string, content: string}>  $history
+     * @return array<string, mixed>
+     */
+    private function applyConversation(array $intent, string $question, array $history, DateTimeImmutable $today): array
+    {
+        $lower = mb_strtolower(trim($question));
+        $intent['follow_up'] = null;
+        $intent['exclude_dates'] = [];
+        $intent['rule_query'] = null;
+        $intent['only_option'] = false;
+
+        if ($this->containsFollow($lower, ['ada pilihan lain', 'pilihan lain', 'ada lagi', 'yang lain', 'other option', 'another day', 'any other'])) {
+            $intent['intent'] = 'hari_baik';
+            $intent['follow_up'] = 'more';
+            $intent['activity'] = is_string($intent['activity'] ?? null) ? $intent['activity'] : $this->activityFromHistory($history);
+            $intent['exclude_dates'] = $this->datesFromHistory($history);
+            $intent['relative_expr'] = 'terdekat';
+            $intent['date_iso'] = null;
+            $intent['date_from'] = null;
+            $intent['date_to'] = null;
+
+            return $intent;
+        }
+
+        if ($this->containsFollow($lower, ['kenapa tanggal', 'kenapa hari', 'kenapa itu', 'why that', 'why is that', 'why this'])) {
+            $intent['intent'] = 'hari_baik';
+            $intent['follow_up'] = 'why';
+            $intent['activity'] = is_string($intent['activity'] ?? null) ? $intent['activity'] : $this->activityFromHistory($history);
+            $dates = $this->datesFromHistory($history);
+            if ($dates !== []) {
+                $intent['date_iso'] = $dates[0];
+                $intent['date_from'] = null;
+                $intent['date_to'] = null;
+                $intent['relative_expr'] = null;
+            }
+
+            return $intent;
+        }
+
+        if (preg_match('/^(?:apa itu|what is|what\'s)\s+(.+)$/u', $lower, $match) === 1) {
+            $query = trim($match[1], " ?.!");
+            if (str_starts_with($lower, 'apa itu') || $this->ruleNote($query, 'id') !== null) {
+                $intent['intent'] = 'explain_rule';
+                $intent['follow_up'] = 'rule';
+                $intent['rule_query'] = $query;
+
+                return $intent;
+            }
+        }
+
+        $month = $this->monthIn($lower);
+        if ($month !== null) {
+            $activity = is_string($intent['activity'] ?? null) ? $intent['activity'] : $this->activityFromHistory($history);
+            if (is_string($activity)) {
+                $intent['intent'] = 'hari_baik';
+                $intent['activity'] = $activity;
+                $year = (int) $today->format('Y');
+                if ($month < (int) $today->format('n')) {
+                    $year++;
+                }
+                $intent['date_from'] = sprintf('%04d-%02d-01', $year, $month);
+                $intent['date_to'] = (new DateTimeImmutable($intent['date_from']))->modify('last day of this month')->format('Y-m-d');
+                $intent['date_iso'] = null;
+                $intent['relative_expr'] = null;
+            }
+        }
+
+        if (! is_string($intent['activity'] ?? null)) {
+            $inherited = $this->activityFromHistory($history);
+            if (is_string($inherited) && in_array($intent['intent'], ['hari_baik', 'out_of_scope', 'needs_form'], true)) {
+                $intent['activity'] = $inherited;
+                if ($intent['intent'] !== 'hari_baik') {
+                    $intent['intent'] = 'hari_baik';
+                }
+            }
+        }
+
+        return $intent;
+    }
+
+    /**
+     * @param  list<string>  $needles
+     */
+    private function containsFollow(string $lower, array $needles): bool
+    {
+        foreach ($needles as $needle) {
+            if (str_contains($lower, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  list<array{role: string, content: string}>  $history
+     */
+    private function activityFromHistory(array $history): ?string
+    {
+        $parser = new OfflineIntentParser;
+        $activity = null;
+        foreach ($history as $row) {
+            if ($row['role'] !== 'user') {
+                continue;
+            }
+            $parsed = $parser->parse($row['content'], 'id');
+            if (is_string($parsed['activity'] ?? null)) {
+                $activity = $parsed['activity'];
+            }
+        }
+
+        return $activity;
+    }
+
+    /**
+     * @param  list<array{role: string, content: string}>  $history
+     * @return list<string>
+     */
+    private function datesFromHistory(array $history): array
+    {
+        $dates = [];
+        foreach ($history as $row) {
+            if ($row['role'] !== 'assistant') {
+                continue;
+            }
+            foreach ($this->guard->datesIn($row['content']) as $iso) {
+                $dates[] = $iso;
+            }
+        }
+
+        return array_values(array_unique($dates));
+    }
+
+    private function monthIn(string $lower): ?int
+    {
+        $months = [
+            'january' => 1, 'januari' => 1, 'february' => 2, 'februari' => 2, 'march' => 3, 'maret' => 3,
+            'april' => 4, 'may' => 5, 'mei' => 5, 'june' => 6, 'juni' => 6, 'july' => 7, 'juli' => 7,
+            'august' => 8, 'agustus' => 8, 'september' => 9, 'october' => 10, 'oktober' => 10,
+            'november' => 11, 'december' => 12, 'desember' => 12,
+        ];
+        foreach ($months as $name => $number) {
+            if (preg_match('/\b'.preg_quote($name, '/').'\b/u', $lower) === 1) {
+                return $number;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     */
+    private function greetPrefix(array $intent): string
+    {
+        return ! empty($intent['greet']) ? 'Om Swastiastu. ' : '';
+    }
+
+    private function closing(string $lang): string
+    {
+        return $lang === 'en'
+            ? 'It is still best to ask a pemangku or sulinggih in your village first.'
+            : 'Tetap baiknya matur dulu ke pemangku/sulinggih di desa ya.';
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     */
+    private function finishAnswer(string $answer, array $intent, string $lang, bool $withClosing): string
+    {
+        $answer = trim($answer);
+        if (! empty($intent['greet']) && ! str_contains($answer, 'Om Swastiastu')) {
+            $answer = 'Om Swastiastu. '.$answer;
+        }
+        if ($withClosing && ! str_contains(mb_strtolower($answer), 'pemangku')) {
+            $answer = rtrim($answer, " \t.").'. '.$this->closing($lang);
+        }
+
+        return trim($answer);
+    }
+
+    private function clarifyAnswer(string $lang): string
+    {
+        return $lang === 'en'
+            ? 'What is the plan for? A wedding, ngaben, tooth filing, or opening a shop? Then I can look for a day that fits.'
+            : 'Rencananya untuk apa, semeton? Nikah, ngaben, potong gigi, atau buka usaha? Biar aku cariin hari yang pas.';
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     */
+    private function ruleAnswer(array $intent, string $lang): string
+    {
+        $query = mb_strtolower(trim((string) ($intent['rule_query'] ?? '')));
+        $query = preg_replace('/\?+$/', '', $query) ?? $query;
+        $note = $this->ruleNote($query, $lang);
+        if ($note !== null) {
+            return $note;
+        }
+
+        return $lang === 'en'
+            ? 'I do not have a short note for that name yet. Ask me which ceremony you are planning.'
+            : 'Aku belum punya catatan singkat untuk nama itu. Mau tanya hari baik untuk upacara yang mana?';
+    }
+
+    /**
+     * @param  array<string, mixed>  $day
+     */
+    private function dayPhrase(array $day, string $lang): string
+    {
+        $when = $this->weekday((string) $day['saptawara'], $lang).', '.$this->humanDate((string) $day['date'], $lang);
+        $holy = $this->holyPhrase((array) ($day['rerahinan_labels'] ?? []), $lang);
+
+        return $holy !== '' ? $when.' - '.$holy : $when;
+    }
+
+    /**
+     * @param  array<string, mixed>  $day
+     */
+    private function whySentence(array $day, string $activity, string $lang): string
+    {
+        $when = $this->humanDate((string) $day['date'], $lang);
+        $holy = $this->holyPhrase((array) ($day['rerahinan_labels'] ?? []), $lang);
+        $rules = $this->ruleNames($day, $lang);
+        $because = $holy !== '' ? $holy : ($day['saptawara'].' '.$day['pancawara']);
+        if ($lang === 'en') {
+            $line = "That day, {$when}, fits because it is {$because}, wuku {$day['wuku']}.";
+            if ($rules !== '') {
+                $line .= " It falls under {$rules}.";
+            }
+
+            return $line;
+        }
+        $line = "Tanggal {$when} cocok karena {$because}, wuku {$day['wuku']}.";
+        if ($rules !== '') {
+            $line .= " Itu hari {$rules}, yang dipakai untuk {$activity}.";
+        }
+
+        return $line;
+    }
+
+    private function ruleNote(string $query, string $lang): ?string
+    {
+        $notes = [
+            'amerta akasa' => ['Hari baik untuk memuja leluhur dan pitra yadnya, termasuk ngaben, saat Anggara jatuh pada Purnama.', 'A good day for ancestor offerings, including ngaben, when Anggara falls on the full moon.'],
+            'amerta buwana' => ['Hari baik untuk dewa yadnya dan pitra yadnya, pada Redite, Soma, atau Anggara saat Purnama.', 'A good day for dewa yadnya and pitra yadnya, on Redite, Soma, or Anggara at the full moon.'],
+            'amerta bumi' => ['Hari baik untuk perkawinan, pada Soma Wage penanggal 1 atau Buda Pon penanggal 10.', 'A good day for a wedding, on Soma Wage penanggal 1 or Buda Pon penanggal 10.'],
+            'kamajaya' => ['Hari baik untuk pernikahan, saat Buda pada penanggal 2, 3, atau 7.', 'A good day for a wedding, when Buda falls on penanggal 2, 3, or 7.'],
+            'derman bagia' => ['Hari baik untuk nikah dan mulai belajar, saat Soma pada penanggal 2, 3, 5, atau 12.', 'A good day for a wedding and for starting lessons, when Soma falls on penanggal 2, 3, 5, or 12.'],
+            'ayu nulus' => ['Hari baik untuk memulai usaha, pada beberapa pasangan saptawara dan penanggal.', 'A good day for starting work, on certain saptawara and penanggal pairs.'],
+            'amerta murti' => ['Hari baik untuk potong gigi, saat Buda Keliwon penanggal 12.', 'A good day for tooth filing, when Buda Keliwon falls on penanggal 12.'],
+            'dirgayusa' => ['Hari baik untuk potong gigi dan manusa yadnya, saat Buda Pon penanggal 10.', 'A good day for tooth filing, when Buda Pon falls on penanggal 10.'],
+        ];
+        foreach ($notes as $name => $pair) {
+            if (str_contains($query, $name)) {
+                $label = mb_convert_case($name, MB_CASE_TITLE, 'UTF-8');
+
+                return $lang === 'en' ? $label.' is '.$pair[1] : $label.' itu '.$pair[0];
+            }
+        }
+
+        return null;
+    }
+
+    private function weekday(string $saptawara, string $lang): string
+    {
+        $map = [
+            'Redite' => ['Minggu', 'Sunday'],
+            'Soma' => ['Senin', 'Monday'],
+            'Anggara' => ['Selasa', 'Tuesday'],
+            'Buda' => ['Rabu', 'Wednesday'],
+            'Wraspati' => ['Kamis', 'Thursday'],
+            'Sukra' => ['Jumat', 'Friday'],
+            'Saniscara' => ['Sabtu', 'Saturday'],
+        ];
+        $pair = $map[$saptawara] ?? [$saptawara, $saptawara];
+
+        return $lang === 'en' ? $pair[1] : $pair[0];
+    }
+
+    /**
+     * @param  list<string>  $labels
+     */
+    private function holyPhrase(array $labels, string $lang): string
+    {
+        $labels = array_values(array_filter($labels, fn ($label) => is_string($label) && $label !== ''));
+        $moon = null;
+        $rest = [];
+        foreach ($labels as $label) {
+            if (in_array($label, ['Purnama', 'Tilem'], true)) {
+                $moon = $label;
+            } else {
+                $rest[] = $label;
+            }
+        }
+        usort($rest, function (string $a, string $b): int {
+            $rank = fn (string $name): int => match (true) {
+                str_contains($name, 'Kasih') => 0,
+                str_starts_with($name, 'Tumpek') => 1,
+                str_contains($name, 'Galungan'), str_contains($name, 'Kuningan'), $name === 'Nyepi' => 2,
+                $name === 'Kajeng Kliwon' => 4,
+                default => 3,
+            };
+
+            return $rank($a) <=> $rank($b);
+        });
+        if ($moon !== null && $rest !== []) {
+            return $lang === 'en' ? $rest[0].' on '.$moon : $rest[0].' pas '.$moon;
+        }
+
+        return $moon ?? ($rest[0] ?? '');
+    }
+
+    private function soundsRobotic(string $text): bool
+    {
+        $lower = mb_strtolower($text);
+
+        foreach ([
+            'validated subset',
+            'in the range i checked',
+            'this is not a decision',
+            'calendar engine',
+            'mesin kalender',
+            'pawukon day',
+            'subset dewasa',
+            'rentang yang saya cek',
+            'nearby days worth',
+            'the nearest day',
+        ] as $phrase) {
+            if (str_contains($lower, $phrase)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $intent
+     * @param  list<array<string, mixed>>|null  $days
+     * @param  list<string>  $followups
+     * @return array<string, mixed>
+     */
+    private function envelope(?array $intent, ?array $days, string $answer, string $mode, bool $needsForm, string $disclaimer, array $followups, string $lang): array
+    {
+        return [
+            'intent' => $intent,
+            'engine' => $days === null ? null : [
+                'days' => $days,
+                'rules_version' => (string) config('sanggah.rules_version'),
+            ],
+            'answer' => $answer,
+            'answer_mode' => $mode,
+            'needs_form' => $needsForm,
+            'disclaimer' => $disclaimer,
+            'followups' => $followups,
+            'reply_lang' => $lang,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     * @param  list<array<string, mixed>>  $days
+     * @return list<string>
+     */
+    private function followups(array $intent, array $days, string $lang): array
+    {
+        $rule = '';
+        foreach ($days as $day) {
+            if (! empty($day['recommended'])) {
+                $rule = explode($lang === 'en' ? ' and ' : ' dan ', $this->ruleNames($day, $lang))[0];
+                break;
+            }
+        }
+        if (($intent['follow_up'] ?? null) === 'rule') {
+            return $lang === 'en'
+                ? ['When is a good day for it?', 'Any other day?']
+                : ['Kapan hari baiknya?', 'Ada pilihan lain?'];
+        }
+        if ($lang === 'en') {
+            $chips = ['Why is that a good day?', 'Any other day?'];
+            if ($rule !== '') {
+                $chips[] = 'What is '.$rule.'?';
+            }
+
+            return $chips;
+        }
+        $chips = ['Kenapa tanggal itu baik?', 'Ada pilihan lain?'];
+        if ($rule !== '') {
+            $chips[] = 'Apa itu '.$rule.'?';
+        }
+
+        return $chips;
     }
 
     private function cleanDate(mixed $value): ?string

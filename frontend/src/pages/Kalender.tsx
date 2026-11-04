@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { FormEvent } from 'react'
 import { useParams } from 'react-router-dom'
 import { api } from '../lib/api.ts'
 import { useLang } from '../lib/i18n.tsx'
@@ -85,6 +86,59 @@ export default function Kalender() {
         </ul>
       )}
       {disclaimer && <p className="mt-4 text-xs leading-relaxed text-moss">{disclaimer}</p>}
+      <DateRangeForm />
     </main>
+  )
+}
+
+function DateRangeForm() {
+  const { lang, tx } = useLang()
+  const [form, setForm] = useState({ activity: 'buka_usaha', from: '', to: '' })
+  const [answer, setAnswer] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      const data = await api<{ answer: string }>('/api/ask', {
+        method: 'POST',
+        body: JSON.stringify({
+          question: tx('Cari hari baik pada rentang ini', 'Find a good day in this range'),
+          lang,
+          intent_override: { intent: 'hari_baik', activity: form.activity, date_from: form.from, date_to: form.to },
+        }),
+      })
+      setAnswer(data.answer)
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form className="mt-8 rounded-2xl border border-dashed border-gold p-4" onSubmit={submit}>
+      <h3 className="font-display text-xl">{tx('Cari hari baik pada rentang tanggal', 'Find a good day in a date range')}</h3>
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <select className="tap rounded-xl border border-line bg-card px-2" value={form.activity} onChange={(event) => setForm({ ...form, activity: event.target.value })}>
+          <option value="buka_usaha">{tx('Buka usaha', 'Open a business')}</option>
+          <option value="pindah_rumah">{tx('Pindah rumah', 'Move house')}</option>
+          <option value="nikah">{tx('Nikah', 'Get married')}</option>
+          <option value="potong_gigi">{tx('Potong gigi', 'Tooth filing')}</option>
+          <option value="potong_rambut">{tx('Potong rambut', 'Hair cutting')}</option>
+          <option value="membangun">{tx('Membangun', 'Build a house')}</option>
+          <option value="ngaben">{tx('Ngaben', 'Ngaben')}</option>
+          <option value="menanam">{tx('Menanam', 'Planting')}</option>
+        </select>
+        <input className="tap rounded-xl border border-line px-2" type="date" required value={form.from} onChange={(event) => setForm({ ...form, from: event.target.value })} />
+        <input className="tap rounded-xl border border-line px-2" type="date" required value={form.to} onChange={(event) => setForm({ ...form, to: event.target.value })} />
+      </div>
+      <button className="tap mt-3 rounded-xl bg-moss px-4 text-paper" type="submit" disabled={busy}>{tx('Hitung', 'Calculate')}</button>
+      {error && <p className="mt-3 text-sm text-brick">{error}</p>}
+      {answer && <p className="mt-3 text-sm leading-relaxed">{answer}</p>}
+    </form>
   )
 }
