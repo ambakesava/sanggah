@@ -38,7 +38,7 @@ class SourceSeeder extends Seeder
                 'code' => 'bimas-hindu-2026',
                 'title' => 'Libur fakultatif hari raya Hindu 2026 (surat B-253/DJ.VI/Dt.VI.I.3/BA.03/09/2025)',
                 'publisher' => 'Ditjen Bimas Hindu Kemenag RI, dikutip detikNews 5 Januari 2026',
-                'url' => 'https://news.detik.com/berita/d-8258056/libur-fakultatif-hari-raya-hindu-2026-ini-aturan-dan-daftar-tanggalnya',
+                'url' => 'https://bimashindu.kemenag.go.id/storage/files/Hari%20Libur%20Nasional,%20Libur%20Fakultatif,%20dan%20Cuti%20Bersama%20Tahun%202026.pdf',
                 'type' => 'pemerintah',
                 'lang' => 'id',
                 'license' => 'Berita yang mengutip surat resmi.',

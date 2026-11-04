@@ -90,6 +90,16 @@ class ApiSmokeTest extends TestCase
         $nikah->assertJsonPath('engine.days.0.recommended', true);
         $this->assertGreaterThan('2026-11-05', $nikah->json('engine.days.0.date'));
         $this->assertStringContainsString($nikah->json('engine.days.0.date'), $nikah->json('answer'));
+
+        $galungan = $this->postJson('/api/ask', [
+            'question' => 'galungan 2026 kapan',
+            'lang' => 'id',
+        ])->assertOk();
+        $galungan->assertJsonPath('intent.year', 2026);
+        $galungan->assertJsonPath('engine.days.0.date', '2026-06-17');
+        $this->assertContains('galungan', $galungan->json('engine.days.0.rerahinan'));
+        $this->assertCount(1, $galungan->json('engine.days'));
+        $this->assertStringContainsString('bimashindu.kemenag.go.id', json_encode($galungan->json('engine.days.0.ceremonies')));
     }
 
     public function test_scan_filename_hint_explain_and_rejection(): void

@@ -70,8 +70,7 @@ final class AskService
             ];
         }
 
-        $span = $this->span($intent, $today, $lang);
-        $days = $this->daysBetween($span['from'], $span['to']);
+        $days = $this->targetDays($intent, $today, $lang);
         $ruleRows = CalendarRule::query()->where('status', 'validated')->get()->map->toEngineArray()->all();
         $engineDays = [];
         foreach ($days as $day) {
@@ -86,6 +85,7 @@ final class AskService
                 'source_id' => $rule['source_id'],
             ], $matched);
             $described['ceremonies'] = Ceremony::query()
+                ->with('sources')
                 ->where('status', 'published')
                 ->whereDate('date_start', '<=', $iso)
                 ->where(function ($query) use ($iso) {
@@ -96,6 +96,11 @@ final class AskService
                 ->map(fn (Ceremony $ceremony) => [
                     'slug' => $ceremony->slug,
                     'name' => $ceremony->nameFor($lang),
+                    'sources' => $ceremony->sources->map(fn ($source) => [
+                        'title' => $source->title,
+                        'publisher' => $source->publisher,
+                        'url' => $source->url,
+                    ])->all(),
                 ])->all();
             $described['recommended'] = $this->recommended($matched, $intent);
             $engineDays[] = $described;
@@ -187,6 +192,9 @@ final class AskService
         }
         if ($parsed['intent'] === 'info_tanggal' && $keyword['intent'] === 'hari_baik') {
             $parsed['intent'] = 'hari_baik';
+        }
+        if (empty($parsed['year']) && ! empty($keyword['year'])) {
+            $parsed['year'] = $keyword['year'];
         }
 
         return $parsed;
@@ -300,8 +308,73 @@ final class AskService
             'date_to' => $this->cleanDate($raw['date_to'] ?? null),
             'relative_expr' => is_string($raw['relative_expr'] ?? null) ? mb_strtolower(trim((string) $raw['relative_expr'])) : null,
             'rerahinan' => $rerahinan,
+            'year' => $this->cleanYear($raw['year'] ?? null),
             'lang' => $lang,
         ];
+    }
+
+    private function cleanYear(mixed $value): ?int
+    {
+        if (is_string($value) && preg_match('/^\d{4}$/', $value) === 1) {
+            $value = (int) $value;
+        }
+        if (! is_int($value) || $value < 2020 || $value > 2035) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     * @return array{from: string, to: string}
+     */
+    /**
+     * @param  array<string, mixed>  $intent
+     * @return list<DateTimeImmutable>
+     */
+    private function targetDays(array $intent, DateTimeImmutable $today, string $lang): array
+    {
+        if ($intent['intent'] === 'rerahinan_berikutnya' && ! empty($intent['year'])) {
+            $found = $this->findInYear($intent['rerahinan'] ?? null, (int) $intent['year']);
+            if ($found === []) {
+                throw new ApiProblem(
+                    'NOT_FOUND',
+                    $lang === 'en'
+                        ? 'That observance does not fall in '.$intent['year'].' on the pawukon cycle or the curated sasih table.'
+                        : 'Hari itu tidak jatuh pada tahun '.$intent['year'].' menurut siklus pawukon atau tabel sasih terkurasi.',
+                    404
+                );
+            }
+
+            return array_map(fn (string $iso) => new DateTimeImmutable($iso), $found);
+        }
+
+        $span = $this->span($intent, $today, $lang);
+
+        return $this->daysBetween($span['from'], $span['to']);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function findInYear(?string $code, int $year): array
+    {
+        $dates = [];
+        $cursor = new DateTimeImmutable(sprintf('%04d-01-01', $year));
+        $end = new DateTimeImmutable(sprintf('%04d-12-31', $year));
+        while ($cursor <= $end) {
+            $names = $this->engine->describe($cursor, SasihDay::payloadFor($cursor->format('Y-m-d')))['rerahinan'];
+            foreach ($names as $name) {
+                if ($code === null || $name === $code || ($code === 'tumpek' && str_starts_with((string) $name, 'tumpek'))) {
+                    $dates[] = $cursor->format('Y-m-d');
+                    break;
+                }
+            }
+            $cursor = $cursor->modify('+1 day');
+        }
+
+        return $dates;
     }
 
     /**
@@ -511,6 +584,11 @@ final class AskService
                 $lines[] = $lang === 'en'
                     ? '  Ceremony alert: '.$ceremony['name'].' (/upacara/'.$ceremony['slug'].')'
                     : '  Ceremony alert: '.$ceremony['name'].' (/upacara/'.$ceremony['slug'].')';
+                foreach ($ceremony['sources'] ?? [] as $source) {
+                    $lines[] = ($lang === 'en' ? '  Published source: ' : '  Sumber terbit: ')
+                        .$source['title']
+                        .($source['url'] ? ' '.$source['url'] : '');
+                }
             }
             foreach ($day['rules'] as $rule) {
                 $lines[] = '  '.($lang === 'en' ? 'Rule' : 'Aturan').': '.$rule['name'].' ['.$rule['effect'].']';

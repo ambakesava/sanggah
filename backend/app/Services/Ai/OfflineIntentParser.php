@@ -21,6 +21,7 @@ final class OfflineIntentParser
         $relative = $this->relative($lower);
         $activity = $this->activity($lower);
         $rerahinan = $this->rerahinan($lower);
+        $year = $this->year($lower);
 
         $intent = 'out_of_scope';
         if (! $this->looksCultural($lower)) {
@@ -32,6 +33,7 @@ final class OfflineIntentParser
                 'date_to' => null,
                 'relative_expr' => null,
                 'rerahinan' => null,
+                'year' => null,
                 'lang' => $lang === 'en' ? 'en' : 'id',
             ];
         }
@@ -56,8 +58,19 @@ final class OfflineIntentParser
             'date_to' => null,
             'relative_expr' => $relative,
             'rerahinan' => $rerahinan,
+            'year' => $year,
             'lang' => $lang === 'en' ? 'en' : 'id',
         ];
+    }
+
+    private function year(string $lower): ?int
+    {
+        if (preg_match('/\b(20\d{2})\b/', $lower, $match) !== 1) {
+            return null;
+        }
+        $year = (int) $match[1];
+
+        return ($year >= 2020 && $year <= 2035) ? $year : null;
     }
 
     private function looksCultural(string $lower): bool
