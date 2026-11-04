@@ -48,13 +48,13 @@ final class GeminiProvider implements AiService
 
     public function generate(string $system, string $user, ?array $schema = null): AiResponse
     {
-        $raw = $this->generateContent($system, $user, $this->textModel, null);
-        $json = JsonExtractor::decode($raw);
+        $jsonMode = ($schema['format'] ?? 'json') !== 'text';
+        $raw = $this->generateContent($system, $user, $this->textModel, null, $jsonMode);
 
-        return new AiResponse($raw, $json, $this->textModel, 'gemini');
+        return new AiResponse($raw, $jsonMode ? JsonExtractor::decode($raw) : null, $this->textModel, 'gemini');
     }
 
-    private function generateContent(string $system, string $user, string $model, ?ImageInput $image): string
+    private function generateContent(string $system, string $user, string $model, ?ImageInput $image, bool $jsonMode = true): string
     {
         $parts = [['text' => $user]];
         if ($image !== null) {
@@ -65,13 +65,16 @@ final class GeminiProvider implements AiService
                 ],
             ];
         }
+        $generation = [
+            'temperature' => $jsonMode ? (float) config('sanggah.ai.temperature', 0.2) : 0.4,
+        ];
+        if ($jsonMode) {
+            $generation['responseMimeType'] = 'application/json';
+        }
         $payload = [
             'systemInstruction' => ['parts' => [['text' => $system]]],
             'contents' => [['role' => 'user', 'parts' => $parts]],
-            'generationConfig' => [
-                'temperature' => (float) config('sanggah.ai.temperature', 0.2),
-                'responseMimeType' => 'application/json',
-            ],
+            'generationConfig' => $generation,
         ];
         $url = $this->baseUrl.'/models/'.$model.':generateContent';
         $body = $this->post($url, $payload, ['x-goog-api-key' => $this->apiKey]);

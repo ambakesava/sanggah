@@ -105,27 +105,10 @@ final class AskService
         $answer = $template;
         $mode = 'template';
         if ($this->ai->providerName() !== 'mock') {
-            try {
-                $system = $this->prompts->get('calendar');
-                $user = json_encode([
-                    'question' => $input['question'] ?? '',
-                    'lang' => $lang,
-                    'intent' => $intent,
-                    'days' => $engineDays,
-                ], JSON_UNESCAPED_UNICODE);
-                $response = $this->ai->generate($system, (string) $user, ['title' => 'CalendarExplanation']);
-                $text = trim($response->text);
-                if (is_array($response->json)) {
-                    $candidate = $response->json['answer'] ?? $response->json['text'] ?? null;
-                    $text = is_string($candidate) ? trim($candidate) : '';
-                }
-                if ($text !== '' && $this->guard->accepts($text, $engineDays)) {
-                    $answer = $text;
-                    $mode = 'llm';
-                }
-            } catch (AiException | Throwable) {
-                $answer = $template;
-                $mode = 'template';
+            $prose = $this->explainWithModel((string) ($input['question'] ?? ''), $intent, $engineDays);
+            if ($prose !== null) {
+                $answer = $prose;
+                $mode = 'llm';
             }
         }
         if (! str_contains($answer, $lang === 'en' ? 'pemangku' : 'pemangku')) {
@@ -207,6 +190,69 @@ final class AskService
         }
 
         return $parsed;
+    }
+
+    /**
+     * @param  array<string, mixed>  $raw
+     * @return array<string, mixed>
+     */
+    /**
+     * @param  array<string, mixed>  $intent
+     * @param  list<array<string, mixed>>  $days
+     */
+    private function explainWithModel(string $question, array $intent, array $days): ?string
+    {
+        $context = [
+            'question' => $question,
+            'activity' => $intent['activity'] ?? null,
+            'days' => array_map(fn (array $day) => [
+                'date' => $day['date'],
+                'wuku' => $day['wuku'],
+                'saptawara' => $day['saptawara'],
+                'pancawara' => $day['pancawara'],
+                'triwara' => $day['triwara'],
+                'sasih' => $day['sasih'],
+                'penanggal_pangelong' => $day['penanggal_pangelong'],
+                'rerahinan' => $day['rerahinan'],
+                'recommended' => (bool) ($day['recommended'] ?? false),
+                'rules' => $day['rules'],
+                'ceremonies' => $day['ceremonies'],
+            ], $days),
+        ];
+        $system = $this->prompts->get('calendar');
+        $user = "CONTEXT:\n".json_encode($context, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        try {
+            $text = $this->prose($system, $user);
+            if ($text !== null && $this->guard->accepts($text, $days)) {
+                return $text;
+            }
+            $retry = $this->prose(
+                $system."\n\nThe previous reply was rejected because it added a date or a name that is not in CONTEXT. Rewrite the answer using only CONTEXT.",
+                $user
+            );
+            if ($retry !== null && $this->guard->accepts($retry, $days)) {
+                return $retry;
+            }
+        } catch (AiException | Throwable) {
+            return null;
+        }
+
+        return null;
+    }
+
+    private function prose(string $system, string $user): ?string
+    {
+        $response = $this->ai->generate($system, $user, ['title' => 'CalendarExplanation', 'format' => 'text']);
+        $text = trim($response->text);
+        if (is_array($response->json)) {
+            $candidate = $response->json['answer'] ?? $response->json['text'] ?? null;
+            if (is_string($candidate) && trim($candidate) !== '') {
+                $text = trim($candidate);
+            }
+        }
+        $text = preg_replace('/^```(?:\w+)?\s*|\s*```$/', '', $text) ?? $text;
+
+        return trim($text) === '' ? null : trim($text);
     }
 
     /**
