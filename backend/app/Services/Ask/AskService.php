@@ -128,7 +128,7 @@ final class AskService
         $mode = 'template';
         if ($this->ai->providerName() !== 'mock') {
             $prose = $this->explainWithModel($question, $intent, $engineDays, $today, $lang, $history);
-            if ($prose !== null) {
+            if ($prose !== null && $this->explainsRecommendedDay($prose, $intent, $engineDays, $lang)) {
                 $answer = $prose;
                 $mode = 'llm';
             }
@@ -247,6 +247,9 @@ final class AskService
             'history' => $history,
             'today' => $today->format('Y-m-d'),
             'activity' => $intent['activity'] ?? null,
+            'window_label' => $intent['window_label'] ?? null,
+            'outside_window' => (bool) ($intent['outside_window'] ?? false),
+            'holy_not_rules' => (bool) ($intent['holy_not_rules'] ?? false),
             'days' => array_map(fn (array $day) => [
                 'date' => $day['date'],
                 'date_label' => $this->humanDate((string) $day['date'], $lang),
@@ -393,6 +396,14 @@ final class AskService
      */
     private function targetDays(array &$intent, DateTimeImmutable $today, string $lang): array
     {
+        if (($intent['intent'] ?? null) === 'hari_baik' && is_string($intent['activity'] ?? null)) {
+            $dates = ($intent['follow_up'] ?? null) === 'why'
+                ? $this->whyDates($intent, $today)
+                : $this->hariBaikDates($intent, $today, $lang);
+
+            return array_map(fn (string $iso) => new DateTimeImmutable($iso), $dates);
+        }
+
         if ($this->searchesActivityWindow($intent)) {
             $dates = $this->activityDates($intent, $today);
             if ($dates !== []) {
@@ -513,10 +524,6 @@ final class AskService
             if ($found !== null) {
                 return ['from' => $found, 'to' => $found];
             }
-            $notable = $this->findNotableDates($today, 90, 3);
-            if ($notable !== []) {
-                return ['from' => $notable[0], 'to' => $notable[array_key_last($notable)]];
-            }
             $start = $today->modify('+1 day')->format('Y-m-d');
 
             return ['from' => $start, 'to' => $start];
@@ -598,7 +605,168 @@ final class AskService
             return array_slice($excluded, 0, 1);
         }
 
-        return $this->findNotableDates($today, 90, 3);
+        return [];
+    }
+
+    /**
+     * Recommended days for a good-day question. Holy days are not used as stand-ins.
+     *
+     * @param  array<string, mixed>  $intent
+     * @return list<string>
+     */
+    private function hariBaikDates(array &$intent, DateTimeImmutable $today, string $lang): array
+    {
+        $window = $this->boundedWindow($intent, $today, $lang);
+        if ($window === null) {
+            $intent['outside_window'] = false;
+            $intent['window_label'] = null;
+
+            return $this->activityDates($intent, $today);
+        }
+        [$from, $to, $label] = $window;
+        $intent['window_label'] = $label;
+        $found = $this->recommendedBetween($intent, $from, $to, 3);
+        if ($found !== []) {
+            $intent['outside_window'] = false;
+
+            return $found;
+        }
+        $intent['outside_window'] = true;
+
+        return $this->findRecommendedDates($intent, new DateTimeImmutable($to), 180, 1);
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     * @return list<string>
+     */
+    private function whyDates(array &$intent, DateTimeImmutable $today): array
+    {
+        $candidates = array_values(array_filter((array) ($intent['history_dates'] ?? []), is_string(...)));
+        foreach (array_reverse($candidates) as $iso) {
+            if ($this->dateIsRecommended($intent, $iso)) {
+                $intent['holy_not_rules'] = false;
+                $intent['outside_window'] = false;
+
+                return [$iso];
+            }
+        }
+        $intent['holy_not_rules'] = $candidates !== [];
+        $intent['outside_window'] = false;
+
+        return $this->findRecommendedDates($intent, $today, 180, 1);
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     * @return array{0: string, 1: string, 2: string}|null
+     */
+    private function boundedWindow(array $intent, DateTimeImmutable $today, string $lang): ?array
+    {
+        if (is_string($intent['date_from'] ?? null) && is_string($intent['date_to'] ?? null)) {
+            return [$intent['date_from'], $intent['date_to'], $this->spanLabel($intent['date_from'], $intent['date_to'], $lang)];
+        }
+        if (is_string($intent['date_iso'] ?? null)) {
+            return [$intent['date_iso'], $intent['date_iso'], $this->humanDate($intent['date_iso'], $lang)];
+        }
+        $relative = $this->knownRelative($intent['relative_expr'] ?? null);
+        if ($relative !== null && $relative !== 'terdekat') {
+            $span = $this->dates->resolve($relative, $today);
+            if ($span !== null) {
+                $label = $lang === 'en' ? 'that period' : 'rentang itu';
+                if (in_array($relative, ['minggu depan', 'next week', 'minggu ini', 'this week'], true)) {
+                    $label = $lang === 'en' ? 'that week' : 'minggu itu';
+                }
+                if (in_array($relative, ['bulan depan', 'next month'], true)) {
+                    $label = $this->spanLabel($span['from'], $span['to'], $lang);
+                }
+
+                return [$span['from'], $span['to'], $label];
+            }
+        }
+        $year = $intent['year'] ?? null;
+        if (is_int($year)) {
+            $start = new DateTimeImmutable(sprintf('%04d-01-01', $year));
+            $end = new DateTimeImmutable(sprintf('%04d-12-31', $year));
+            $from = $today->modify('+1 day');
+            if ($from < $start || $from > $end) {
+                $from = $start;
+            }
+
+            return [$from->format('Y-m-d'), $end->format('Y-m-d'), (string) $year];
+        }
+
+        return null;
+    }
+
+    private function spanLabel(string $from, string $to, string $lang): string
+    {
+        $start = new DateTimeImmutable($from);
+        $end = new DateTimeImmutable($to);
+        if ($start->format('Y-m') === $end->format('Y-m')) {
+            return $this->monthName((int) $start->format('n'), $lang).' '.$start->format('Y');
+        }
+        if ($start->format('m-d') === '01-01' && $end->format('m-d') === '12-31') {
+            return $start->format('Y');
+        }
+
+        return $lang === 'en' ? 'that period' : 'rentang itu';
+    }
+
+    private function monthName(int $month, string $lang): string
+    {
+        $names = $lang === 'en'
+            ? [1 => 'January', 2 => 'February', 3 => 'March', 4 => 'April', 5 => 'May', 6 => 'June', 7 => 'July', 8 => 'August', 9 => 'September', 10 => 'October', 11 => 'November', 12 => 'December']
+            : [1 => 'Januari', 2 => 'Februari', 3 => 'Maret', 4 => 'April', 5 => 'Mei', 6 => 'Juni', 7 => 'Juli', 8 => 'Agustus', 9 => 'September', 10 => 'Oktober', 11 => 'November', 12 => 'Desember'];
+
+        return $names[$month] ?? '';
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     * @return list<string>
+     */
+    private function recommendedBetween(array $intent, string $from, string $to, int $max): array
+    {
+        if (! is_string($intent['activity'] ?? null) || $max < 1) {
+            return [];
+        }
+        $ruleRows = CalendarRule::query()->where('status', 'validated')->get()->map->toEngineArray()->all();
+        $skip = array_fill_keys(array_filter((array) ($intent['exclude_dates'] ?? []), is_string(...)), true);
+        $found = [];
+        $cursor = new DateTimeImmutable($from);
+        $end = new DateTimeImmutable($to);
+        while ($cursor <= $end && count($found) < $max) {
+            $iso = $cursor->format('Y-m-d');
+            if (! isset($skip[$iso]) && $this->dayIsRecommended($intent, $iso, $ruleRows)) {
+                $found[] = $iso;
+            }
+            $cursor = $cursor->modify('+1 day');
+        }
+
+        return $found;
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     */
+    private function dateIsRecommended(array $intent, string $iso): bool
+    {
+        $ruleRows = CalendarRule::query()->where('status', 'validated')->get()->map->toEngineArray()->all();
+
+        return $this->dayIsRecommended($intent, $iso, $ruleRows);
+    }
+
+    /**
+     * @param  array<string, mixed>  $intent
+     * @param  list<array<string, mixed>>  $ruleRows
+     */
+    private function dayIsRecommended(array $intent, string $iso, array $ruleRows): bool
+    {
+        $described = $this->engine->describe(new DateTimeImmutable($iso), SasihDay::payloadFor($iso));
+        $matched = $this->rules->match($described, $ruleRows, is_string($intent['activity'] ?? null) ? $intent['activity'] : null);
+
+        return $this->recommended($matched, $intent);
     }
 
     /**
@@ -620,12 +788,7 @@ final class AskService
                 if (isset($skip[$iso])) {
                     continue;
                 }
-                $described = $this->engine->describe($day, SasihDay::payloadFor($iso));
-                if ($described['phase'] === null) {
-                    continue;
-                }
-                $matched = $this->rules->match($described, $ruleRows, $intent['activity']);
-                if ($this->recommended($matched, $intent)) {
+                if ($this->dayIsRecommended($intent, $iso, $ruleRows)) {
                     $found[] = $iso;
                 }
             }
@@ -641,43 +804,6 @@ final class AskService
         }
 
         return $seek(-1);
-    }
-
-    /**
-     * @return list<string>
-     */
-    private function findNotableDates(DateTimeImmutable $today, int $limit, int $max): array
-    {
-        $found = [];
-        for ($i = 1; $i <= $limit && count($found) < $max; $i++) {
-            $day = $today->modify('+'.$i.' day');
-            $described = $this->engine->describe($day, SasihDay::payloadFor($day->format('Y-m-d')));
-            if ($this->isNotable($described)) {
-                $found[] = $day->format('Y-m-d');
-            }
-        }
-
-        return $found;
-    }
-
-    /**
-     * @param  array<string, mixed>  $day
-     */
-    private function isNotable(array $day): bool
-    {
-        foreach ((array) ($day['rerahinan'] ?? []) as $name) {
-            if (! is_string($name)) {
-                continue;
-            }
-            if (in_array($name, ['tilem', 'purnama', 'galungan', 'kuningan', 'nyepi', 'saraswati', 'pagerwesi', 'kajeng_keliwon'], true)) {
-                return true;
-            }
-            if (str_starts_with($name, 'tumpek')) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private function findNext(?string $code, DateTimeImmutable $today, bool $forward): ?string
@@ -755,8 +881,14 @@ final class AskService
 
         if ($intent['intent'] === 'hari_baik' && $recommended !== [] && ($intent['follow_up'] ?? null) === 'why') {
             $day = $recommended[0];
+            $note = '';
+            if (! empty($intent['holy_not_rules'])) {
+                $note = $lang === 'en'
+                    ? 'The dates mentioned before were nearby holy days, not good days for '.$activity.' from the rules. '
+                    : 'Tanggal yang tadi disebut itu hari raya di dekat situ, bukan hari '.$activity.' dari aturannya. ';
+            }
 
-            return $prefix.$this->whySentence($day, $activity, $lang);
+            return $prefix.$note.$this->whySentence($day, $activity, $lang);
         }
 
         if ($intent['intent'] === 'hari_baik' && ! empty($intent['only_option']) && $recommended !== []) {
@@ -783,19 +915,33 @@ final class AskService
             $when = $this->dayPhrase($first, $lang);
             $rules = $this->ruleNames($first, $lang);
             $passed = $first['date'] < $today->format('Y-m-d');
+            $window = is_string($intent['window_label'] ?? null) ? $intent['window_label'] : null;
+            $outside = ! empty($intent['outside_window']) && $window !== null;
             if ($lang === 'en') {
-                $lead = $passed
-                    ? "For {$activity}, a fitting day was {$when}. That day has already passed."
-                    : "For {$activity}, the nearest fitting day is {$when}.";
+                if ($outside) {
+                    $lead = "In {$window} there is no good day for {$activity} from the rules we use. The next one after that is {$when}.";
+                } elseif ($window !== null) {
+                    $lead = "In {$window}, a fitting day for {$activity} is {$when}.";
+                } elseif ($passed) {
+                    $lead = "For {$activity}, a fitting day was {$when}. That day has already passed.";
+                } else {
+                    $lead = "For {$activity}, the nearest fitting day is {$when}.";
+                }
                 if ($rules !== '') {
                     $lead .= " It falls under {$rules}, wuku {$first['wuku']}.";
                 }
 
                 return $prefix.$lead;
             }
-            $lead = $passed
-                ? "Untuk {$activity}, hari yang cocok jatuh pada {$when}. Hari itu sudah lewat."
-                : "Untuk {$activity}, hari yang cocok paling dekat itu {$when}.";
+            if ($outside) {
+                $lead = "Di {$window} belum ada hari baik untuk {$activity} menurut aturan yang dipakai. Yang paling dekat sesudah itu {$when}.";
+            } elseif ($window !== null) {
+                $lead = "Di {$window}, hari yang cocok untuk {$activity} itu {$when}.";
+            } elseif ($passed) {
+                $lead = "Untuk {$activity}, hari yang cocok jatuh pada {$when}. Hari itu sudah lewat.";
+            } else {
+                $lead = "Untuk {$activity}, hari yang cocok paling dekat itu {$when}.";
+            }
             if ($rules !== '') {
                 $lead .= " Wukunya {$first['wuku']}, masuk {$rules}.";
             }
@@ -804,23 +950,16 @@ final class AskService
         }
 
         if ($intent['intent'] === 'hari_baik') {
-            $notes = $this->notablePhrases($days, $lang);
+            $window = is_string($intent['window_label'] ?? null) ? $intent['window_label'] : null;
             if ($lang === 'en') {
-                $lead = "I don't see a fitting day for {$activity} just there.";
-                if ($notes !== '') {
-                    $lead .= " Close by there is {$notes}.";
-                }
-                $lead .= ' Which month are you planning?';
-
-                return $prefix.$lead;
+                return $prefix.($window !== null
+                    ? "In {$window} there is no good day for {$activity} from the rules we use."
+                    : "There is no good day for {$activity} from the rules we use in that range.");
             }
-            $lead = "Untuk {$activity}, di situ belum ada hari yang pas.";
-            if ($notes !== '') {
-                $lead .= " Yang ada di dekatnya: {$notes}.";
-            }
-            $lead .= ' Rencananya bulan apa? Biar aku cariin yang pas.';
 
-            return $prefix.$lead;
+            return $prefix.($window !== null
+                ? "Di {$window} belum ada hari baik untuk {$activity} menurut aturan yang dipakai."
+                : "Belum ada hari baik untuk {$activity} menurut aturan yang dipakai di rentang itu.");
         }
 
         $notes = $this->notablePhrases($days, $lang);
@@ -1096,13 +1235,11 @@ final class AskService
             $intent['intent'] = 'hari_baik';
             $intent['follow_up'] = 'why';
             $intent['activity'] = is_string($intent['activity'] ?? null) ? $intent['activity'] : $this->activityFromHistory($history);
-            $dates = $this->datesFromHistory($history);
-            if ($dates !== []) {
-                $intent['date_iso'] = $dates[0];
-                $intent['date_from'] = null;
-                $intent['date_to'] = null;
-                $intent['relative_expr'] = null;
-            }
+            $intent['history_dates'] = $this->datesFromHistory($history);
+            $intent['date_iso'] = null;
+            $intent['date_from'] = null;
+            $intent['date_to'] = null;
+            $intent['relative_expr'] = null;
 
             return $intent;
         }
@@ -1229,6 +1366,27 @@ final class AskService
     /**
      * @param  array<string, mixed>  $intent
      */
+    /**
+     * @param  array<string, mixed>  $intent
+     * @param  list<array<string, mixed>>  $days
+     */
+    private function explainsRecommendedDay(string $answer, array $intent, array $days, string $lang): bool
+    {
+        if (empty($intent['holy_not_rules'])) {
+            return true;
+        }
+        $lower = mb_strtolower($answer);
+        if (! str_contains($lower, 'bukan hari') && ! str_contains($lower, 'not good days')) {
+            return false;
+        }
+        $iso = (string) ($days[0]['date'] ?? '');
+        if ($iso === '') {
+            return true;
+        }
+
+        return str_contains($answer, $iso) || str_contains($answer, $this->humanDate($iso, $lang));
+    }
+
     private function finishAnswer(string $answer, array $intent): string
     {
         $kept = [];

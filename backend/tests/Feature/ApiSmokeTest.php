@@ -80,8 +80,12 @@ class ApiSmokeTest extends TestCase
         ])->assertOk();
         $response->assertJsonPath('intent.intent', 'hari_baik');
         $response->assertJsonPath('intent.activity', 'buka_usaha');
-        $response->assertJsonPath('engine.days.0.date', '2026-11-09');
-        $this->assertCount(7, $response->json('engine.days'));
+        $days = $response->json('engine.days');
+        $this->assertIsArray($days);
+        $this->assertNotEmpty($days);
+        foreach ($days as $day) {
+            $this->assertTrue($day['recommended']);
+        }
 
         $this->travelTo('2026-11-05 02:00:00');
         $nikah = $this->postJson('/api/ask', [
@@ -148,14 +152,14 @@ class ApiSmokeTest extends TestCase
         $text = (string) $week->json('answer');
         $this->assertStringNotContainsString('pawukon day', strtolower($text));
         $this->assertStringNotContainsString('kajeng_keliwon', $text);
-        $this->assertStringContainsString('Kajeng Kliwon', $text);
-        $this->assertStringContainsString('Tumpek Landep', $text);
+        $this->assertStringNotContainsString('Tumpek Landep', $text);
+        $this->assertStringNotContainsString('bulan apa', strtolower($text));
         $this->assertStringNotContainsString('pemangku', strtolower($text));
         $this->assertStringNotContainsString('sulinggih', strtolower($text));
         $this->assertStringNotContainsString((string) $week->json('disclaimer'), $text);
-        $this->assertFalse(collect($week->json('engine.days'))->contains(
-            fn (array $day) => ($day['recommended'] ?? false) === true
-        ));
+        foreach ($week->json('engine.days') as $day) {
+            $this->assertTrue($day['recommended']);
+        }
     }
 
     public function test_ngaben_phrasing_variants_share_one_search(): void
@@ -209,6 +213,65 @@ class ApiSmokeTest extends TestCase
         $dates = array_column($more->json('engine.days'), 'date');
         $this->assertNotContains($firstDate, $dates);
         $this->assertGreaterThan($firstDate, $dates[0]);
+    }
+
+    public function test_nikah_year_month_and_why_stay_on_recommended_days(): void
+    {
+        $this->travelTo('2026-11-05 02:00:00');
+        $nikah = $this->postJson('/api/ask', [
+            'question' => 'di 2026 kapan hari baik untuk nikah',
+            'lang' => 'en',
+        ])->assertOk();
+        $nikah->assertJsonPath('intent.activity', 'nikah');
+        $nikah->assertJsonPath('engine.days.0.recommended', true);
+        $this->assertGreaterThan('2026-11-05', $nikah->json('engine.days.0.date'));
+        $this->assertLessThan('2027-01-01', $nikah->json('engine.days.0.date'));
+        $rules = strtolower(json_encode($nikah->json('engine.days.0.rules')));
+        $this->assertTrue(
+            str_contains($rules, 'kamajaya') || str_contains($rules, 'amerta') || str_contains($rules, 'derman')
+        );
+        $answer = strtolower((string) $nikah->json('answer'));
+        $this->assertStringNotContainsString('kajeng kliwon', $answer);
+        $this->assertStringNotContainsString('tumpek', $answer);
+        $this->assertStringNotContainsString('bulan apa', $answer);
+        $this->assertStringNotContainsString('pemangku', $answer);
+
+        $december = $this->postJson('/api/ask', [
+            'question' => 'di bulan december ada?',
+            'lang' => 'en',
+            'history' => [
+                ['role' => 'user', 'content' => 'di 2026 kapan hari baik untuk nikah'],
+                ['role' => 'assistant', 'content' => $nikah->json('answer')],
+            ],
+        ])->assertOk();
+        $december->assertJsonPath('intent.activity', 'nikah');
+        $decemberDays = $december->json('engine.days');
+        $this->assertNotEmpty($decemberDays);
+        foreach ($decemberDays as $day) {
+            $this->assertTrue($day['recommended']);
+            $this->assertStringStartsWith('2026-12-', $day['date']);
+        }
+        $decemberAnswer = strtolower((string) $december->json('answer'));
+        $this->assertStringContainsString('desember', $decemberAnswer);
+        $this->assertStringNotContainsString('bulan apa', $decemberAnswer);
+        $this->assertStringNotContainsString('tumpek', $decemberAnswer);
+        $this->assertStringNotContainsString('9 november', $decemberAnswer);
+
+        $why = $this->postJson('/api/ask', [
+            'question' => 'Kenapa tanggal itu baik?',
+            'lang' => 'en',
+            'history' => [
+                ['role' => 'user', 'content' => 'di 2026 kapan hari baik untuk nikah'],
+                ['role' => 'assistant', 'content' => 'Di situ belum ada hari yang pas. Yang ada di dekatnya: Kajeng Kliwon dan Tilem pada 9 November 2026, Tumpek Landep pada 14 November 2026, serta Kajeng Kliwon dan Anggara Kasih dan Purnama pada 24 November 2026.'],
+            ],
+        ])->assertOk();
+        $why->assertJsonPath('intent.activity', 'nikah');
+        $why->assertJsonPath('engine.days.0.recommended', true);
+        $whyAnswer = (string) $why->json('answer');
+        $this->assertStringContainsString('bukan hari menikah', strtolower($whyAnswer));
+        $this->assertMatchesRegularExpression('/Kamajaya|Amerta Bumi|Derman Bagia|Panca Amerta|Dasa Amerta/', $whyAnswer);
+        $this->assertStringNotContainsString('9 November 2026', $whyAnswer);
+        $this->assertStringNotContainsString('bulan apa', strtolower($whyAnswer));
     }
 
     public function test_potong_gigi_returns_a_validated_day(): void
