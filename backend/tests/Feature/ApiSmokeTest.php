@@ -62,7 +62,8 @@ class ApiSmokeTest extends TestCase
         $response->assertJsonPath('engine.days.0.pancawara', 'Keliwon');
         $this->assertContains('galungan', $response->json('engine.days.0.rerahinan'));
         $this->assertNotEmpty($response->json('disclaimer'));
-        $this->assertStringContainsString('pemangku', strtolower($response->json('answer')));
+        $this->assertStringNotContainsString('pemangku', strtolower($response->json('answer')));
+        $this->assertStringNotContainsString('sulinggih', strtolower($response->json('answer')));
     }
 
     public function test_ask_out_of_scope_and_relative_business_day(): void
@@ -132,7 +133,8 @@ class ApiSmokeTest extends TestCase
         $this->assertStringNotContainsString('Mesin kalender', $answer);
         $this->assertStringNotContainsString('kajeng_keliwon', $answer);
         $this->assertStringNotContainsString((string) $near->json('disclaimer'), $answer);
-        $this->assertStringContainsString('pemangku', strtolower($answer));
+        $this->assertStringNotContainsString('pemangku', strtolower($answer));
+        $this->assertStringNotContainsString('sulinggih', strtolower($answer));
         $near->assertJsonPath('engine.days.0.recommended', true);
         $near->assertJsonPath('engine.days.0.date', '2026-11-24');
         $this->assertStringContainsString('24 November 2026', $answer);
@@ -148,7 +150,8 @@ class ApiSmokeTest extends TestCase
         $this->assertStringNotContainsString('kajeng_keliwon', $text);
         $this->assertStringContainsString('Kajeng Kliwon', $text);
         $this->assertStringContainsString('Tumpek Landep', $text);
-        $this->assertStringContainsString('pemangku', strtolower($text));
+        $this->assertStringNotContainsString('pemangku', strtolower($text));
+        $this->assertStringNotContainsString('sulinggih', strtolower($text));
         $this->assertStringNotContainsString((string) $week->json('disclaimer'), $text);
         $this->assertFalse(collect($week->json('engine.days'))->contains(
             fn (array $day) => ($day['recommended'] ?? false) === true
@@ -176,7 +179,8 @@ class ApiSmokeTest extends TestCase
             $answer = (string) $response->json('answer');
             $this->assertStringContainsString('24 November 2026', $answer);
             $this->assertStringContainsString('Om Swastiastu', $answer);
-            $this->assertStringContainsString('pemangku', mb_strtolower($answer));
+            $this->assertStringNotContainsString('pemangku', mb_strtolower($answer));
+            $this->assertStringNotContainsString('sulinggih', mb_strtolower($answer));
             $this->assertStringNotContainsString('validated subset', strtolower($answer));
             $this->assertStringNotContainsString('in the range', strtolower($answer));
             $this->assertStringNotContainsString('not a decision', strtolower($answer));

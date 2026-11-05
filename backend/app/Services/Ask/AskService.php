@@ -54,13 +54,13 @@ final class AskService
         $disclaimer = (string) config('sanggah.disclaimer.calendar.'.$lang);
 
         if (($intent['intent'] ?? null) === 'explain_rule') {
-            $answer = $this->finishAnswer($this->ruleAnswer($intent, $lang), $intent, $lang, false);
+            $answer = $this->finishAnswer($this->ruleAnswer($intent, $lang), $intent);
 
             return $this->envelope($intent, null, $answer, 'template', false, $disclaimer, $this->followups($intent, [], $lang), $lang);
         }
 
         if ($intent['intent'] === 'hari_baik' && ! is_string($intent['activity'] ?? null)) {
-            $answer = $this->finishAnswer($this->clarifyAnswer($lang), $intent, $lang, false);
+            $answer = $this->finishAnswer($this->clarifyAnswer($lang), $intent);
 
             return $this->envelope($intent, null, $answer, 'template', false, $disclaimer, $this->followups($intent, [], $lang), $lang);
         }
@@ -70,16 +70,14 @@ final class AskService
                 $lang === 'en'
                     ? 'I can help with the Balinese calendar and choosing a day for a ceremony. Try asking when a good day for a wedding is.'
                     : 'Aku bantu soal kalender Bali dan hari baik upacara. Coba tanya, misalnya, kapan hari baik untuk nikah.',
-                $intent,
-                $lang,
-                false
+                $intent
             );
 
             return $this->envelope($intent, null, $answer, 'template', false, $disclaimer, [], $lang);
         }
 
         if ($intent['intent'] === 'needs_form') {
-            $answer = $this->finishAnswer($this->clarifyAnswer($lang), $intent, $lang, false);
+            $answer = $this->finishAnswer($this->clarifyAnswer($lang), $intent);
 
             return $this->envelope($intent, null, $answer, 'template', true, $disclaimer, $this->followups($intent, [], $lang), $lang);
         }
@@ -135,7 +133,7 @@ final class AskService
                 $mode = 'llm';
             }
         }
-        $answer = $this->finishAnswer(trim(str_replace($disclaimer, '', $answer)), $intent, $lang, true);
+        $answer = $this->finishAnswer(trim(str_replace($disclaimer, '', $answer)), $intent);
 
         return $this->envelope($intent, $engineDays, $answer, $mode, false, $disclaimer, $this->followups($intent, $engineDays, $lang), $lang);
     }
@@ -1228,24 +1226,23 @@ final class AskService
         return ! empty($intent['greet']) ? 'Om Swastiastu. ' : '';
     }
 
-    private function closing(string $lang): string
-    {
-        return $lang === 'en'
-            ? 'It is still best to ask a pemangku or sulinggih in your village first.'
-            : 'Tetap baiknya matur dulu ke pemangku/sulinggih di desa ya.';
-    }
-
     /**
      * @param  array<string, mixed>  $intent
      */
-    private function finishAnswer(string $answer, array $intent, string $lang, bool $withClosing): string
+    private function finishAnswer(string $answer, array $intent): string
     {
-        $answer = trim($answer);
+        $kept = [];
+        foreach (preg_split('/(?<=[.!?])\s+/u', trim($answer)) ?: [] as $sentence) {
+            if (preg_match('/pemangku|sulinggih/i', $sentence) === 1) {
+                continue;
+            }
+            if (trim($sentence) !== '') {
+                $kept[] = trim($sentence);
+            }
+        }
+        $answer = trim(implode(' ', $kept));
         if (! empty($intent['greet']) && ! str_contains($answer, 'Om Swastiastu')) {
             $answer = 'Om Swastiastu. '.$answer;
-        }
-        if ($withClosing && ! str_contains(mb_strtolower($answer), 'pemangku')) {
-            $answer = rtrim($answer, " \t.").'. '.$this->closing($lang);
         }
 
         return trim($answer);
